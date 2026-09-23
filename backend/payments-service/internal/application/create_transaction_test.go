@@ -1,0 +1,97 @@
+package application_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/application"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/domain"
+)
+
+func validInput() application.CreateTransactionInput {
+	return application.CreateTransactionInput{
+		SourceCountry:       "CO",
+		DestinationCountry:  "US",
+		SourceCurrency:      "COP",
+		DestinationCurrency: "USD",
+		Amount:              "4000000.00",
+		FXRate:              "0.0002626",
+		Provider:            "provider_a",
+	}
+}
+
+func TestCreateTransaction_Valid(t *testing.T) {
+	repo := newFakeRepository()
+	uc := application.NewCreateTransaction(repo)
+
+	tx, err := uc.Execute(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tx.Status != domain.StatusPending {
+		t.Errorf("expected status %q, got %q", domain.StatusPending, tx.Status)
+	}
+	if tx.ID == "" {
+		t.Error("expected a generated transaction ID")
+	}
+	if _, ok := repo.transactions[string(tx.ID)]; !ok {
+		t.Error("expected transaction to be persisted in the repository")
+	}
+}
+
+func TestCreateTransaction_Validation(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(in *application.CreateTransactionInput)
+		wantField string
+	}{
+		{"invalid amount", func(in *application.CreateTransactionInput) { in.Amount = "0" }, "amount"},
+		{"non-numeric amount", func(in *application.CreateTransactionInput) { in.Amount = "abc" }, "amount"},
+		{"invalid fx_rate", func(in *application.CreateTransactionInput) { in.FXRate = "0" }, "fx_rate"},
+		{"non-numeric fx_rate", func(in *application.CreateTransactionInput) { in.FXRate = "abc" }, "fx_rate"},
+		{"missing source country", func(in *application.CreateTransactionInput) { in.SourceCountry = "" }, "source_country"},
+		{"invalid destination country", func(in *application.CreateTransactionInput) { in.DestinationCountry = "usa" }, "destination_country"},
+		{"invalid source currency", func(in *application.CreateTransactionInput) { in.SourceCurrency = "xx" }, "source_currency"},
+		{"invalid destination currency", func(in *application.CreateTransactionInput) { in.DestinationCurrency = "US" }, "destination_currency"},
+		{"missing provider", func(in *application.CreateTransactionInput) { in.Provider = "" }, "provider"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeRepository()
+			uc := application.NewCreateTransaction(repo)
+
+			input := validInput()
+			tt.mutate(&input)
+
+			_, err := uc.Execute(context.Background(), input)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+
+			verr, ok := domain.AsValidationError(err)
+			if !ok {
+				t.Fatalf("expected *domain.ValidationError, got %T: %v", err, err)
+			}
+			if _, ok := verr.Fields[tt.wantField]; !ok {
+				t.Errorf("expected validation error on field %q, got fields %v", tt.wantField, verr.Fields)
+			}
+			if len(repo.transactions) != 0 {
+				t.Error("expected no transaction to be persisted on validation failure")
+			}
+		})
+	}
+}
+
+func TestCreateTransaction_RepositoryFailure(t *testing.T) {
+	repo := newFakeRepository()
+	repo.createErr = errRepositoryFailure
+	uc := application.NewCreateTransaction(repo)
+
+	_, err := uc.Execute(context.Background(), validInput())
+	if !errors.Is(err, errRepositoryFailure) {
+		t.Errorf("expected error to wrap repository failure, got %v", err)
+	}
+}

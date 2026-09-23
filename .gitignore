@@ -1,0 +1,10 @@
+# Go build artifacts
+/backend/*/bin/
+*.exe
+*.test
+*.out
+
+# Environment files
+.env
+.env.*
+!.env.example

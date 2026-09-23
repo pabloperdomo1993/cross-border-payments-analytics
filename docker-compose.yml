@@ -1,0 +1,39 @@
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: payments
+      MARIADB_USER: payments
+      MARIADB_PASSWORD: payments
+      MARIADB_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./backend/payments-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  payments-service:
+    build:
+      context: ./backend/payments-service
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      HTTP_PORT: "8080"
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: payments
+      DB_USER: payments
+      DB_PASSWORD: payments
+    ports:
+      - "8080:8080"
+
+volumes:
+  mariadb_data:
