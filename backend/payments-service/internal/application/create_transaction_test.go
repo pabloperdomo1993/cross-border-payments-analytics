@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/application"
@@ -42,6 +43,49 @@ func TestCreateTransaction_Valid(t *testing.T) {
 	}
 	if _, ok := repo.transactions[string(tx.ID)]; !ok {
 		t.Error("expected transaction to be persisted in the repository")
+	}
+
+	if repo.lastEvent == nil {
+		t.Fatal("expected an outbox event to be created alongside the transaction")
+	}
+	if repo.lastEvent.AggregateID != string(tx.ID) {
+		t.Errorf("expected outbox event aggregate_id %q, got %q", tx.ID, repo.lastEvent.AggregateID)
+	}
+	if repo.lastEvent.EventType != application.EventTypePaymentCreated {
+		t.Errorf("expected outbox event type %q, got %q", application.EventTypePaymentCreated, repo.lastEvent.EventType)
+	}
+	if repo.lastEvent.Status != domain.OutboxStatusPending {
+		t.Errorf("expected outbox event status %q, got %q", domain.OutboxStatusPending, repo.lastEvent.Status)
+	}
+	if !strings.Contains(repo.lastEvent.Payload, string(tx.ID)) {
+		t.Errorf("expected outbox event payload to reference transaction id %q, got %s", tx.ID, repo.lastEvent.Payload)
+	}
+}
+
+func TestCreateTransaction_ContextCancellation(t *testing.T) {
+	repo := newFakeRepository()
+	uc := application.NewCreateTransaction(repo)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := uc.Execute(ctx, validInput())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+	if len(repo.transactions) != 0 {
+		t.Error("expected no transaction to be persisted when the context is already cancelled")
+	}
+}
+
+func TestCreateTransaction_DuplicateIdempotencyKey(t *testing.T) {
+	repo := newFakeRepository()
+	repo.createErr = domain.ErrConflict
+	uc := application.NewCreateTransaction(repo)
+
+	_, err := uc.Execute(context.Background(), validInput())
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Errorf("expected error to wrap domain.ErrConflict for a duplicate idempotency key, got %v", err)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,8 @@ import (
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/application"
 	httphandler "github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/handlers/http"
+	paymentskafka "github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/kafka"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/outbox"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/repository/mariadb"
 )
 
@@ -39,22 +43,49 @@ type config struct {
 	dbName     string
 	dbUser     string
 	dbPassword string
+
+	kafkaBrokers       []string
+	outboxTopic        string
+	outboxPollInterval time.Duration
+	outboxBatchSize    int
 }
 
 func loadConfig() config {
 	return config{
-		httpPort:   getEnv("HTTP_PORT", "8080"),
-		dbHost:     getEnv("DB_HOST", "localhost"),
-		dbPort:     getEnv("DB_PORT", "3306"),
-		dbName:     getEnv("DB_NAME", "payments"),
-		dbUser:     getEnv("DB_USER", "payments"),
-		dbPassword: os.Getenv("DB_PASSWORD"),
+		httpPort:           getEnv("HTTP_PORT", "8080"),
+		dbHost:             getEnv("DB_HOST", "localhost"),
+		dbPort:             getEnv("DB_PORT", "3306"),
+		dbName:             getEnv("DB_NAME", "payments"),
+		dbUser:             getEnv("DB_USER", "payments"),
+		dbPassword:         os.Getenv("DB_PASSWORD"),
+		kafkaBrokers:       strings.Split(getEnv("KAFKA_BROKERS", "localhost:9092"), ","),
+		outboxTopic:        getEnv("KAFKA_TOPIC_PAYMENTS_CREATED", "payments.created"),
+		outboxPollInterval: getDuration("OUTBOX_POLL_INTERVAL", 500*time.Millisecond),
+		outboxBatchSize:    getInt("OUTBOX_BATCH_SIZE", 50),
 	}
 }
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
+}
+
+func getInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }
@@ -77,6 +108,11 @@ func run(logger *slog.Logger) error {
 	}
 	defer db.Close()
 
+	producer, err := paymentskafka.NewProducer(cfg.kafkaBrokers)
+	if err != nil {
+		return fmt.Errorf("open kafka producer: %w", err)
+	}
+
 	repo := mariadb.NewTransactionRepository(db)
 	createTx := application.NewCreateTransaction(repo)
 	getTx := application.NewGetTransaction(repo)
@@ -97,6 +133,22 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	relay := outbox.NewRelay(repo, producer, outbox.Config{
+		Topic:        cfg.outboxTopic,
+		PollInterval: cfg.outboxPollInterval,
+		BatchSize:    cfg.outboxBatchSize,
+	}, logger)
+
+	relayDone := make(chan struct{})
+	go func() {
+		logger.Info("outbox relay started",
+			slog.String("topic", cfg.outboxTopic),
+			slog.Duration("poll_interval", cfg.outboxPollInterval),
+		)
+		relay.Run(ctx)
+		close(relayDone)
+	}()
+
 	serverErrs := make(chan error, 1)
 	go func() {
 		logger.Info("http server listening", slog.String("addr", server.Addr))
@@ -107,9 +159,10 @@ func run(logger *slog.Logger) error {
 		serverErrs <- nil
 	}()
 
+	var runErr error
 	select {
-	case err := <-serverErrs:
-		return err
+	case runErr = <-serverErrs:
+		stop()
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 	}
@@ -118,11 +171,21 @@ func run(logger *slog.Logger) error {
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("http server shutdown: %w", err)
+		logger.Warn("http server shutdown error", slog.String("error", err.Error()))
+	}
+
+	select {
+	case <-relayDone:
+	case <-time.After(shutdownTimeout):
+		logger.Warn("outbox relay shutdown timed out")
+	}
+
+	if err := producer.Close(); err != nil {
+		logger.Warn("producer close error", slog.String("error", err.Error()))
 	}
 
 	logger.Info("shutdown complete")
-	return nil
+	return runErr
 }
 
 func openDB(cfg config) (*sql.DB, error) {

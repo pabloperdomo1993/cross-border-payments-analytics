@@ -9,6 +9,7 @@ import (
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/application"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/domain"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/metrics"
 )
 
 // CreateTransactionUseCase is the subset of application.CreateTransaction
@@ -111,6 +112,7 @@ func (h *TransactionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metrics.PaymentsCreatedTotal.Inc()
 	h.logger.InfoContext(r.Context(), "transaction_created",
 		slog.String("transaction_id", string(tx.ID)),
 		slog.String("correlation_id", CorrelationID(r.Context())),

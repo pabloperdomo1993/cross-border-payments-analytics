@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IBM/sarama"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/config"
@@ -62,9 +63,34 @@ func run(logger *slog.Logger) error {
 		RetryBackoff:           cfg.RetryBackoff,
 	}, logger)
 
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		// A short-lived client connection is this service's equivalent
+		// of a DB/ClickHouse ping elsewhere: it verifies Kafka is
+		// actually reachable, not just that this process is alive.
+		readyCfg := sarama.NewConfig()
+		readyCfg.Net.DialTimeout = 2 * time.Second
+		client, err := sarama.NewClient(cfg.KafkaBrokers, readyCfg)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"unavailable"}`))
+			return
+		}
+		defer client.Close()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
+
 	metricsServer := &http.Server{
 		Addr:              ":" + cfg.MetricsPort,
-		Handler:           promhttp.Handler(),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

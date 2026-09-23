@@ -301,3 +301,58 @@ func TestPool_ExecuteRaceWithShutdown(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestPool_NoGoroutineLeakAfterShutdown verifies that once Shutdown
+// returns, all worker goroutines have actually exited — not just that
+// Shutdown's own call returned, but that the runtime's goroutine count
+// has gone back down to (approximately) its pre-pool baseline. A leak
+// here would mean worker goroutines are blocked forever (e.g. stuck on
+// a channel operation) even though the caller believes shutdown
+// completed.
+func TestPool_NoGoroutineLeakAfterShutdown(t *testing.T) {
+	baseline := goroutineCountStable(t)
+
+	const workerCount = 8
+	pool := workerpool.New(workerCount, 16)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount*3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = pool.Execute(context.Background(), func(ctx context.Context) error { return nil })
+		}()
+	}
+	wg.Wait()
+
+	pool.Shutdown()
+
+	after := goroutineCountStable(t)
+	// Allow a small tolerance: the test runner itself and any
+	// in-flight cleanup goroutines from other tests can wobble this by
+	// one or two: the workerCount pool goroutines specifically must be
+	// gone, which a large tolerance would mask, so keep it tight.
+	const tolerance = 2
+	if after > baseline+tolerance {
+		t.Errorf("expected goroutine count to return to ~baseline after Shutdown: baseline=%d, after=%d (tolerance=%d)", baseline, after, tolerance)
+	}
+}
+
+// goroutineCountStable samples runtime.NumGoroutine() after letting the
+// scheduler settle, to avoid flaking on goroutines that are mid-exit
+// rather than actually leaked.
+func goroutineCountStable(t *testing.T) int {
+	t.Helper()
+	runtime.Gosched()
+	last := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		time.Sleep(2 * time.Millisecond)
+		runtime.Gosched()
+		current := runtime.NumGoroutine()
+		if current == last {
+			return current
+		}
+		last = current
+	}
+	return last
+}

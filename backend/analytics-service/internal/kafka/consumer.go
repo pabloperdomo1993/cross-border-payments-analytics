@@ -13,6 +13,7 @@ import (
 	"github.com/IBM/sarama"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/analytics-service/internal/domain"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/analytics-service/internal/metrics"
 )
 
 // Inserter is the subset of repository.AnalyticsRepository the consumer
@@ -67,7 +68,9 @@ func (h *ConsumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 		if len(outcomes) == 0 {
 			return
 		}
+		metrics.ClickHouseInsertBatchesTotal.Inc()
 		if err := h.inserter.InsertBatch(session.Context(), outcomes); err != nil {
+			metrics.ClickHouseInsertErrorsTotal.Inc()
 			h.logger.ErrorContext(session.Context(), "failed to insert analytics batch; messages will be redelivered",
 				slog.Int("batch_size", len(outcomes)),
 				slog.String("error", err.Error()),
@@ -91,6 +94,8 @@ func (h *ConsumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 				flush()
 				return nil
 			}
+
+			metrics.KafkaMessagesConsumedTotal.Inc()
 
 			var outcome domain.PaymentOutcome
 			if err := json.Unmarshal(msg.Value, &outcome); err != nil {

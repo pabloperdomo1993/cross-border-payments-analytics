@@ -3,6 +3,8 @@ package http
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // NewRouter builds the complete HTTP handler for analytics-service.
@@ -16,6 +18,7 @@ func NewRouter(analyticsHandler *AnalyticsHandler, healthHandler *HealthHandler,
 	mux.HandleFunc("GET /api/v1/analytics/timeseries", analyticsHandler.TimeSeries)
 	mux.HandleFunc("GET /health", healthHandler.Health)
 	mux.HandleFunc("GET /ready", healthHandler.Ready)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
-	return WithLogging(logger, mux)
+	return WithLogging(logger, WithMetrics(mux))
 }

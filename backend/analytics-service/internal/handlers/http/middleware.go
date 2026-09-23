@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/analytics-service/internal/metrics"
 )
 
 type correlationIDKey struct{}
@@ -64,5 +67,25 @@ func WithLogging(logger *slog.Logger, next http.Handler) http.Handler {
 			slog.Duration("duration", time.Since(start)),
 			slog.String("correlation_id", correlationID),
 		)
+	})
+}
+
+// WithMetrics wraps mux, recording http_requests_total/duration labeled
+// by route PATTERN (via mux.Handler, Go 1.22+'s ServeMux) rather than
+// the raw request path.
+func WithMetrics(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, pattern := mux.Handler(r)
+		if pattern == "" {
+			pattern = "unmatched"
+		}
+
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+
+		mux.ServeHTTP(rec, r)
+
+		metrics.HTTPRequestsTotal.WithLabelValues(r.Method, pattern, strconv.Itoa(rec.status)).Inc()
+		metrics.HTTPRequestDuration.WithLabelValues(r.Method, pattern).Observe(time.Since(start).Seconds())
 	})
 }

@@ -74,7 +74,17 @@ func (uc *CreateTransaction) Execute(ctx context.Context, input CreateTransactio
 		return nil, err
 	}
 
-	if err := uc.repo.Create(ctx, tx); err != nil {
+	eventID, err := NewTransactionID()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", domain.ErrRepository, err)
+	}
+
+	event, err := newPaymentCreatedOutboxEvent(eventID, tx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", domain.ErrRepository, err)
+	}
+
+	if err := uc.repo.Create(ctx, tx, event); err != nil {
 		return nil, err
 	}
 

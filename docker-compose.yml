@@ -1,4 +1,17 @@
 services:
+  # Stock Vite + React + TypeScript scaffold (no application code
+  # changes here — only what's needed to run it reproducibly in
+  # Docker). Its own API calls, once added, run in the BROWSER, not
+  # inside this container, so they must target the host-published
+  # ports (e.g. http://localhost:8082 for analytics-service) — never a
+  # Docker service name, which the browser can't resolve.
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+
   mariadb:
     image: mariadb:11
     restart: unless-stopped
@@ -25,6 +38,8 @@ services:
     depends_on:
       mariadb:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       HTTP_PORT: "8080"
       DB_HOST: mariadb
@@ -32,25 +47,46 @@ services:
       DB_NAME: payments
       DB_USER: payments
       DB_PASSWORD: payments
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_PAYMENTS_CREATED: payments.created
+      OUTBOX_POLL_INTERVAL: 500ms
+      OUTBOX_BATCH_SIZE: "50"
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Single-node Kafka in KRaft mode (no Zookeeper). Six partitions are
   # created per topic (see kafka-init) so payment-processor's
   # WORKER_COUNT=10 has real cross-partition concurrency to exercise
   # locally — see docs/architecture.md for why partition count bounds
   # true parallelism.
+  #
+  # Two listeners, deliberately: PLAINTEXT (advertised as kafka:9092) is
+  # what other containers use; EXTERNAL (advertised as
+  # localhost:29092) is what anything running on the HOST — a locally
+  # -run `go test -tags=integration`, a developer's kafka-console tool
+  # — must use instead. Kafka's protocol has clients fetch metadata
+  # from any broker and then reconnect using the ADVERTISED address for
+  # the actual topic/partition; a host client given only "kafka:9092"
+  # (a name that only resolves inside the Docker network) would fail to
+  # ever actually produce/consume despite the initial connection
+  # succeeding — exactly the failure this second listener avoids.
   kafka:
     image: apache/kafka:3.8.0
     restart: unless-stopped
     ports:
       - "9092:9092"
+      - "29092:29092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -101,12 +137,18 @@ services:
       METRICS_PORT: "9091"
     ports:
       - "9091:9091"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   prometheus:
     image: prom/prometheus:v2.55.1
     restart: unless-stopped
     depends_on:
-      - payment-processor
+      payment-processor:
+        condition: service_healthy
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
@@ -161,8 +203,30 @@ services:
       ANALYTICS_BATCH_MAX_INTERVAL: "2s"
     ports:
       - "8082:8082"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_started
+    environment:
+      # Local dev-only default credentials, not a secret.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
 
 volumes:
   mariadb_data:
   kafka_data:
   clickhouse_data:
+  grafana_data:

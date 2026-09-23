@@ -140,7 +140,7 @@ The architecture is designed around the following principles:
                                            React
 ```
 
-Implementation status: `payments-service` (HTTP + MariaDB), `payment-processor` (Kafka consumer/worker pool + producer), and `analytics-service` (Kafka consumer + ClickHouse + HTTP analytics API) are all implemented, per sections 5–6 below. `payments-service` does not yet publish to `payments.created` — see section 5's limitations; `analytics-service` is verified end-to-end via manually-produced test messages in the interim.
+Implementation status: `payments-service` (HTTP + MariaDB + Transactional Outbox), `payment-processor` (Kafka consumer/worker pool + producer), and `analytics-service` (Kafka consumer + ClickHouse + HTTP analytics API) are all implemented, per sections 5–7 below. `payments-service` now publishes to `payments.created` for real via its outbox relay (see section 7) — the whole documented critical path (POST → MariaDB → outbox → Kafka → payment-processor → Kafka → analytics-service → ClickHouse → analytics API) is verified end-to-end, both manually and by an automated test (`tests/e2e_test.go`). `frontend`, `prometheus`, and `grafana` all run via `docker compose up`; Kafka, MariaDB, and ClickHouse container health checks and Go-service `/health`+`/ready` endpoints gate startup ordering.
 
 ---
 
@@ -381,3 +381,102 @@ results (never fabricated) from a 1,000,000-row deterministic dataset:
   equivalent datasets in both engines (~150x faster on ClickHouse),
   framed explicitly as an OLTP-vs-OLAP architectural illustration, with
   a correctness cross-check between the two result sets.
+
+---
+
+## 7. Transactional Outbox, testing strategy, and full local stack
+
+### Transactional Outbox (`payments-service`)
+
+Previously deferred (see earlier revisions of this document); now
+implemented. `outbox_events` (migration 004) is written in the exact
+same SQL transaction as the `transactions` row it describes —
+`TransactionRepository.Create` does `BEGIN; INSERT transactions; INSERT
+outbox_events; COMMIT`, with a `defer sqlTx.Rollback()` that only
+actually fires (rolling back the payment insert too) if the outbox
+insert or the commit itself fails. A payment can never exist without a
+corresponding queued event — verified directly by
+`TestIntegration_Create_RollsBackPaymentWhenOutboxInsertFails` against a
+real MariaDB.
+
+A small in-process relay (`internal/outbox/relay.go`, started as a
+goroutine from `main.go`) polls `outbox_events` on a ticker
+(`OUTBOX_POLL_INTERVAL`, default 500ms), publishes each pending event's
+already-serialized JSON payload to `payments.created` via a Kafka
+producer, and marks it published only after a successful publish.
+
+**Delivery semantics — stated plainly**: at-least-once, not
+exactly-once. If the relay crashes between a successful Kafka publish
+and the local "mark published" write, that event is republished on
+restart. Building true exactly-once (e.g. a distributed transaction
+across MariaDB and Kafka) is out of scope — this is a documented,
+accepted trade-off, not an oversight, and it's the same trade-off every
+outbox-pattern implementation without XA/2PC makes.
+
+### Testing strategy
+
+Each Go module keeps two independent test surfaces:
+
+- **Plain `go test ./...`** — no Docker required. Domain unit tests,
+  application/use-case tests against hand-written fakes (never a real
+  database or broker), and HTTP handler tests via `httptest`. This is
+  what runs by default and stays fast.
+- **`go test -tags=integration ./...`** — real MariaDB / ClickHouse /
+  Kafka, gated behind a build tag so it's opt-in and never silently
+  skipped-but-passing. Covers: outbox atomicity (rollback, pending
+  -event retrieval, publish-marking), MariaDB constraints (unique
+  idempotency key, primary key, not-found), ClickHouse aggregation
+  queries against deterministic fixture data (the exact
+  CO→US/CO→US/MX→US example from this project's own test plan), and two
+  focused Kafka flows — `payments.created` reaching a real
+  `payment-processor` consumer and producing a real `payments.processed`
+  message, and that message reaching a real `analytics-service` consumer
+  and landing in ClickHouse. Deliberately not "dozens" of Kafka
+  tests — two, covering the two hops that matter.
+- **`tests/` (repo root)** — one automated end-to-end test
+  (`TestE2E_PaymentCreation_BecomesVisibleInAnalytics`) that exercises
+  the whole system as a black-box HTTP client: POST a payment, poll
+  analytics-service until it's visible. This is what actually proves the
+  full chain works together, not just each hop in isolation.
+- **`go test -race ./...`** — run for all four Go modules. The worker
+  pool's `RWMutex`-guarded close (to avoid a send-on-closed-channel
+  race) and every Kafka consumer/outbox-relay goroutine were verified
+  clean under the race detector, not just reasoned about.
+
+### Docker Compose: the complete local stack
+
+`frontend` (React/Vite, built via a Node multi-stage Dockerfile and
+served by nginx — static files only, no Node.js in the runtime image),
+`grafana` (with Prometheus auto-provisioned as its datasource — no
+manual UI setup needed), and Docker-level `healthcheck:` entries on
+`payments-service`/`payment-processor`/`analytics-service` (hitting
+their `/health` endpoints; `payment-processor` gained `/health` and
+`/ready` HTTP endpoints alongside its existing `/metrics`, since it
+previously had neither) round out the compose file — the architecture's
+originally intended service list is now fully present and wired.
+
+**A real networking issue found and fixed along the way**: Kafka's
+single listener originally advertised itself only as `kafka:9092` —
+correct for other containers, but unusable from the host (a locally-run
+`go test -tags=integration`, or any developer tool), since a client
+first fetches broker metadata from any reachable address and then
+*reconnects using the advertised name*, which `kafka:9092` only
+resolves to inside the Docker network. Fixed with a second `EXTERNAL`
+listener advertised as `localhost:29092`, published as an additional
+compose port — the kind of subtlety `docker compose up` alone won't
+surface until something outside the Docker network actually tries to
+produce/consume.
+
+### Observability: metrics now cover every Go service
+
+`payments-service` and `analytics-service` previously exposed no
+Prometheus metrics at all; only `payment-processor` did. All three now
+expose `/metrics` (HTTP request count/duration by method + **route
+pattern**, never a raw path — a transaction ID must never become a
+label value) plus service-specific counters: `payments_created_total`
+and `outbox_events_published_total`/`outbox_events_publish_errors_total`
+on `payments-service`; `kafka_messages_consumed_total` and
+`clickhouse_insert_batches_total`/`clickhouse_insert_errors_total` on
+`analytics-service`. `observability/prometheus/prometheus.yml` scrapes
+all three; all three show as `health: up` in Prometheus's own
+`/api/v1/targets`, verified live.

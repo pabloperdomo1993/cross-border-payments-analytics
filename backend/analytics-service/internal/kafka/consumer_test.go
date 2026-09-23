@@ -155,11 +155,17 @@ func TestConsumerHandler_FlushesOnInterval(t *testing.T) {
 	b1, _ := json.Marshal(sampleOutcome("tx-1"))
 	claim.messages <- &sarama.ConsumerMessage{Value: b1, Offset: 1}
 
+	// Poll for the offset actually being marked (not just the insert
+	// call happening) — flush() marks each message in a loop AFTER
+	// InsertBatch returns, so checking callCount() alone leaves a real
+	// (if normally tiny) window where the insert is recorded but the
+	// mark hasn't happened yet; under scheduling load that window is
+	// enough to flake if it's not what's actually being polled for.
 	deadline := time.After(2 * time.Second)
-	for inserter.callCount() < 1 {
+	for len(session.markedOffsets()) < 1 {
 		select {
 		case <-deadline:
-			t.Fatal("timed out waiting for interval-based flush")
+			t.Fatalf("timed out waiting for interval-based flush to mark the offset (insert calls so far: %d)", inserter.callCount())
 		default:
 		}
 	}
