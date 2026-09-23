@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -91,6 +92,7 @@ func toTransactionResponse(tx *domain.Transaction) transactionResponse {
 func (h *TransactionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createTransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		metrics.PaymentsCreationFailedTotal.WithLabelValues("validation_error").Inc()
 		writeError(w, r.Context(), h.logger, &domain.ValidationError{
 			Fields: map[string]string{"body": "must be valid JSON"},
 		})
@@ -108,6 +110,7 @@ func (h *TransactionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Provider:            req.Provider,
 	})
 	if err != nil {
+		metrics.PaymentsCreationFailedTotal.WithLabelValues(creationFailureReason(err)).Inc()
 		writeError(w, r.Context(), h.logger, err)
 		return
 	}
@@ -118,6 +121,19 @@ func (h *TransactionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		slog.String("correlation_id", CorrelationID(r.Context())),
 	)
 	writeJSON(w, http.StatusCreated, toTransactionResponse(tx))
+}
+
+// creationFailureReason classifies err into a low-cardinality label for
+// PaymentsCreationFailedTotal, mirroring writeError's own classification
+// in response.go without changing that function's signature.
+func creationFailureReason(err error) string {
+	if _, ok := domain.AsValidationError(err); ok {
+		return "validation_error"
+	}
+	if errors.Is(err, domain.ErrConflict) {
+		return "conflict"
+	}
+	return "internal_error"
 }
 
 // Get handles GET /api/v1/transactions/{id}.

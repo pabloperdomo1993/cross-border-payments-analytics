@@ -28,6 +28,13 @@ var PaymentsCreatedTotal = promauto.NewCounter(prometheus.CounterOpts{
 	Help: "Total number of payments successfully created.",
 })
 
+// PaymentsCreationFailedTotal counts failed payment-creation attempts,
+// by a low-cardinality failure reason (never the raw error message).
+var PaymentsCreationFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "payments_creation_failed_total",
+	Help: "Total number of payment creation attempts that failed, by reason.",
+}, []string{"reason"})
+
 // OutboxEventsPublishedTotal and OutboxEventsPublishErrorsTotal track
 // the relay's own throughput/health.
 var OutboxEventsPublishedTotal = promauto.NewCounter(prometheus.CounterOpts{

@@ -480,3 +480,55 @@ on `payments-service`; `kafka_messages_consumed_total` and
 `analytics-service`. `observability/prometheus/prometheus.yml` scrapes
 all three; all three show as `health: up` in Prometheus's own
 `/api/v1/targets`, verified live.
+
+`payments-service` also now emits `payments_creation_failed_total{reason}`
+(`validation_error`/`conflict`/`internal_error`) alongside the
+previously-dead `payments_created_total`, which is incremented on every
+successful `POST /api/v1/transactions` — both counters are visible from
+the first request onward, not just after a prior session wired the
+collector without ever calling `.Inc()`.
+
+A Grafana dashboard, **"Cross-Border Payments — Platform Overview"**, is
+provisioned automatically from
+`observability/grafana/provisioning/dashboards/platform-overview.json`
+(no manual import needed) with 13 panels: request rate, HTTP P95
+latency, HTTP error rate, payments created, payments processed,
+completed/failed payments, payment processing rate, processing
+P50/P95/P99 latency, active workers, worker queue depth, Kafka messages
+consumed, and Kafka processing errors. One mapping is intentionally
+inexact and documented in the panel's own description: there is no
+generic `kafka_processing_errors_total` metric anywhere in the system,
+so "Kafka processing errors" is served by `clickhouse_insert_errors_total`
+on `analytics-service` — since batch-inserting into ClickHouse is the
+*only* per-message work that service does, an insert failure already
+*is* the Kafka-processing failure; adding a second, parallel counter for
+the same event would just be duplication.
+
+**Why Docker healthchecks stay on `/health`, not `/ready`.** The only
+compose-level consumer of any Go service's health status is
+`prometheus`'s `depends_on: payment-processor: condition: service_healthy`.
+Prometheus's job is to *observe* target health over time, so it should
+start as soon as payment-processor's process is alive — not block on
+`/ready`'s Kafka-connectivity check, which would make a slow Kafka
+startup take Prometheus down with it, the one tool meant to help
+diagnose exactly that kind of problem. Real dependency ordering onto
+MariaDB/ClickHouse/Kafka is already handled correctly one level down, by
+each infrastructure container's own healthcheck combined with
+`depends_on: condition: service_healthy` on the Go services. `/ready`
+therefore remains available for manual/external checks and future use,
+but deliberately isn't wired into any `docker-compose.yml` healthcheck
+today.
+
+**Why `prometheus`/`grafana` have no Docker healthcheck of their own.**
+Nothing in `docker-compose.yml` gates on either container's health
+(`grafana`'s `depends_on: prometheus` only waits for the container to
+*start*), so a healthcheck here would add complexity — and an assumption
+that `wget`/`curl` exist in the upstream `prom/prometheus`/`grafana/grafana`
+images — for no actual startup-ordering benefit.
+
+**Troubleshooting a DOWN Prometheus target:**
+1. `docker compose ps <service>` — confirm the container is actually running and its own healthcheck is passing.
+2. `curl http://localhost:<port>/health` and `/ready` directly from the host, using the port `docker-compose.yml` publishes for that service.
+3. `docker compose logs <service>` — look for a startup error (e.g. failed to bind, dependency not yet reachable).
+4. Open `http://localhost:9090/targets` and read the `Error` column: DNS resolution failure usually means the container isn't running or was renamed; connection refused usually means the process hasn't started listening yet; a scrape timeout usually means the process is up but slow/stuck.
+5. Confirm `observability/prometheus/prometheus.yml`'s target hostname matches the compose service name exactly — Docker's internal DNS resolves by service name, not `localhost`, and a typo here silently produces a permanent DNS-failure target.

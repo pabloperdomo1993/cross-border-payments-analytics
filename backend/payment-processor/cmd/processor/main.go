@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IBM/sarama"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/config"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/handlers"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/kafka"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/metrics"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/processing"
@@ -65,28 +65,11 @@ func run(logger *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		// A short-lived client connection is this service's equivalent
-		// of a DB/ClickHouse ping elsewhere: it verifies Kafka is
-		// actually reachable, not just that this process is alive.
-		readyCfg := sarama.NewConfig()
-		readyCfg.Net.DialTimeout = 2 * time.Second
-		client, err := sarama.NewClient(cfg.KafkaBrokers, readyCfg)
-		w.Header().Set("Content-Type", "application/json")
-		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"unavailable"}`))
-			return
-		}
-		defer client.Close()
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
-	})
+	mux.HandleFunc("/health", handlers.Health)
+	// A short-lived client connection is this service's equivalent of a
+	// DB/ClickHouse ping elsewhere: it verifies Kafka is actually
+	// reachable, not just that this process is alive.
+	mux.HandleFunc("/ready", handlers.Ready(handlers.NewSaramaPinger(cfg.KafkaBrokers)))
 
 	metricsServer := &http.Server{
 		Addr:              ":" + cfg.MetricsPort,

@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/analytics-service/internal/domain"
 	kafkapkg "github.com/pabloperdomo1993/cross-border-payments-analytics/backend/analytics-service/internal/kafka"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/analytics-service/internal/metrics"
 )
 
 func discardLogger() *slog.Logger {
@@ -141,6 +143,47 @@ func TestConsumerHandler_FlushesOnBatchSize(t *testing.T) {
 	}
 }
 
+// TestConsumerHandler_SuccessfulBatch_IncrementsConsumedAndInsertMetrics
+// verifies the two consumed messages from
+// TestConsumerHandler_FlushesOnBatchSize's scenario are also reflected
+// in kafka_messages_consumed_total (per message) and
+// clickhouse_insert_batches_total (per successful batch insert).
+func TestConsumerHandler_SuccessfulBatch_IncrementsConsumedAndInsertMetrics(t *testing.T) {
+	inserter := &fakeInserter{}
+	handler := kafkapkg.NewConsumerHandler(inserter, kafkapkg.BatchConfig{MaxSize: 2, MaxInterval: time.Hour}, discardLogger())
+
+	session := &fakeSession{ctx: context.Background()}
+	claim := newFakeClaim()
+
+	consumedBefore := testutil.ToFloat64(metrics.KafkaMessagesConsumedTotal)
+	batchesBefore := testutil.ToFloat64(metrics.ClickHouseInsertBatchesTotal)
+
+	done := make(chan error, 1)
+	go func() { done <- handler.ConsumeClaim(session, claim) }()
+
+	b1, _ := json.Marshal(sampleOutcome("tx-1"))
+	b2, _ := json.Marshal(sampleOutcome("tx-2"))
+	claim.messages <- &sarama.ConsumerMessage{Value: b1, Offset: 1}
+	claim.messages <- &sarama.ConsumerMessage{Value: b2, Offset: 2}
+	close(claim.messages)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ConsumeClaim did not return")
+	}
+
+	if after := testutil.ToFloat64(metrics.KafkaMessagesConsumedTotal); after-consumedBefore != 2 {
+		t.Errorf("expected kafka_messages_consumed_total to increment by 2, went from %v to %v", consumedBefore, after)
+	}
+	if after := testutil.ToFloat64(metrics.ClickHouseInsertBatchesTotal); after-batchesBefore != 1 {
+		t.Errorf("expected clickhouse_insert_batches_total to increment by 1, went from %v to %v", batchesBefore, after)
+	}
+}
+
 func TestConsumerHandler_FlushesOnInterval(t *testing.T) {
 	inserter := &fakeInserter{}
 	handler := kafkapkg.NewConsumerHandler(inserter, kafkapkg.BatchConfig{MaxSize: 1000, MaxInterval: 20 * time.Millisecond}, discardLogger())
@@ -204,6 +247,36 @@ func TestConsumerHandler_DoesNotMarkOffsetsWhenInsertFails(t *testing.T) {
 
 	if got := session.markedOffsets(); len(got) != 0 {
 		t.Fatalf("expected no offsets marked when insert fails, got %v", got)
+	}
+}
+
+// TestConsumerHandler_InsertFailure_IncrementsInsertErrorsTotal mirrors
+// TestConsumerHandler_DoesNotMarkOffsetsWhenInsertFails's scenario,
+// additionally asserting the failure is recorded as a metric.
+func TestConsumerHandler_InsertFailure_IncrementsInsertErrorsTotal(t *testing.T) {
+	inserter := &fakeInserter{err: errors.New("clickhouse unavailable")}
+	handler := kafkapkg.NewConsumerHandler(inserter, kafkapkg.BatchConfig{MaxSize: 1, MaxInterval: time.Hour}, discardLogger())
+
+	session := &fakeSession{ctx: context.Background()}
+	claim := newFakeClaim()
+
+	before := testutil.ToFloat64(metrics.ClickHouseInsertErrorsTotal)
+
+	done := make(chan error, 1)
+	go func() { done <- handler.ConsumeClaim(session, claim) }()
+
+	b1, _ := json.Marshal(sampleOutcome("tx-1"))
+	claim.messages <- &sarama.ConsumerMessage{Value: b1, Offset: 1}
+	close(claim.messages)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ConsumeClaim did not return")
+	}
+
+	if after := testutil.ToFloat64(metrics.ClickHouseInsertErrorsTotal); after-before != 1 {
+		t.Errorf("expected clickhouse_insert_errors_total to increment by 1, went from %v to %v", before, after)
 	}
 }
 

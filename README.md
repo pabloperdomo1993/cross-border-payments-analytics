@@ -87,6 +87,10 @@ curl -X POST localhost:8080/api/v1/transactions \
 curl "localhost:8082/api/v1/analytics/corridors?source_country=CO&destination_country=US"
 ```
 
+### Dashboards
+
+Open http://localhost:3000 (admin/admin) — the **"Cross-Border Payments — Platform Overview"** dashboard is provisioned automatically on startup, no manual import needed. If a Prometheus target ever shows as down, see "Troubleshooting a DOWN Prometheus target" in `docs/architecture.md`.
+
 ## Database & Analytics
 
 This project treats SQL and data modeling as a first-class concern, not

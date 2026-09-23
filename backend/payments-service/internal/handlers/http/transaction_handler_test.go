@@ -9,10 +9,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	httphandler "github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/handlers/http"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/application"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/domain"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payments-service/internal/metrics"
 )
 
 func discardLogger() *slog.Logger {
@@ -161,6 +164,95 @@ func TestTransactionHandler_Create_InternalError(t *testing.T) {
 	}
 	if bytes.Contains(rec.Body.Bytes(), []byte("repository")) {
 		t.Errorf("internal error details must not leak to the client, got body: %s", rec.Body.String())
+	}
+}
+
+func TestTransactionHandler_Create_Valid_IncrementsPaymentsCreatedTotal(t *testing.T) {
+	tx := sampleTransaction(t)
+	handler := httphandler.NewTransactionHandler(&fakeCreateUseCase{tx: tx}, &fakeGetUseCase{}, discardLogger())
+
+	before := testutil.ToFloat64(metrics.PaymentsCreatedTotal)
+
+	req := httptest.NewRequest("POST", "/api/v1/transactions", bytes.NewBufferString(`{
+		"idempotency_key": "idem-key-1",
+		"source_country": "CO",
+		"destination_country": "US",
+		"source_currency": "COP",
+		"destination_currency": "USD",
+		"source_amount": "4000000.00",
+		"fx_rate": "0.0002626",
+		"provider": "provider_a"
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.Create(rec, req)
+
+	after := testutil.ToFloat64(metrics.PaymentsCreatedTotal)
+	if after-before != 1 {
+		t.Errorf("expected PaymentsCreatedTotal to increment by 1, went from %v to %v", before, after)
+	}
+}
+
+func TestTransactionHandler_Create_ValidationError_IncrementsPaymentsCreationFailedTotal(t *testing.T) {
+	handler := httphandler.NewTransactionHandler(
+		&fakeCreateUseCase{err: &domain.ValidationError{Fields: map[string]string{"amount": "must be greater than zero"}}},
+		&fakeGetUseCase{},
+		discardLogger(),
+	)
+
+	counter := metrics.PaymentsCreationFailedTotal.WithLabelValues("validation_error")
+	before := testutil.ToFloat64(counter)
+
+	req := httptest.NewRequest("POST", "/api/v1/transactions", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.Create(rec, req)
+
+	after := testutil.ToFloat64(counter)
+	if after-before != 1 {
+		t.Errorf("expected PaymentsCreationFailedTotal{reason=validation_error} to increment by 1, went from %v to %v", before, after)
+	}
+}
+
+func TestTransactionHandler_Create_ConflictError_IncrementsPaymentsCreationFailedTotal(t *testing.T) {
+	handler := httphandler.NewTransactionHandler(
+		&fakeCreateUseCase{err: domain.ErrConflict},
+		&fakeGetUseCase{},
+		discardLogger(),
+	)
+
+	counter := metrics.PaymentsCreationFailedTotal.WithLabelValues("conflict")
+	before := testutil.ToFloat64(counter)
+
+	req := httptest.NewRequest("POST", "/api/v1/transactions", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.Create(rec, req)
+
+	after := testutil.ToFloat64(counter)
+	if after-before != 1 {
+		t.Errorf("expected PaymentsCreationFailedTotal{reason=conflict} to increment by 1, went from %v to %v", before, after)
+	}
+}
+
+func TestTransactionHandler_Create_InternalError_IncrementsPaymentsCreationFailedTotal(t *testing.T) {
+	handler := httphandler.NewTransactionHandler(
+		&fakeCreateUseCase{err: domain.ErrRepository},
+		&fakeGetUseCase{},
+		discardLogger(),
+	)
+
+	counter := metrics.PaymentsCreationFailedTotal.WithLabelValues("internal_error")
+	before := testutil.ToFloat64(counter)
+
+	req := httptest.NewRequest("POST", "/api/v1/transactions", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.Create(rec, req)
+
+	after := testutil.ToFloat64(counter)
+	if after-before != 1 {
+		t.Errorf("expected PaymentsCreationFailedTotal{reason=internal_error} to increment by 1, went from %v to %v", before, after)
 	}
 }
 

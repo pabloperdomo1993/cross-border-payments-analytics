@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/domain"
 	kafkapkg "github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/kafka"
+	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/metrics"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/processing"
 	"github.com/pabloperdomo1993/cross-border-payments-analytics/backend/payment-processor/internal/workerpool"
 )
@@ -198,6 +200,90 @@ func TestConsumerHandler_MarksOffsetOnlyAfterSuccessfulProcessing(t *testing.T) 
 	}
 	if calls := publisher.callsTo("payments.processed"); len(calls) != 1 {
 		t.Fatalf("expected exactly 1 publish to payments.processed, got %d", len(calls))
+	}
+}
+
+// TestConsumerHandler_SuccessfulProcessing_IncrementsProcessingTotalCompleted
+// verifies the business counter moves at the same lifecycle point the
+// offset-marking test above already exercises: a successfully processed
+// and published message counts as one "completed" outcome.
+func TestConsumerHandler_SuccessfulProcessing_IncrementsProcessingTotalCompleted(t *testing.T) {
+	pool := workerpool.New(2, 4)
+	defer pool.Shutdown()
+
+	publisher := &fakePublisher{}
+	handler := newTestHandler(pool, processing.NewDefaultProcessor(), publisher)
+
+	session := &fakeSession{ctx: context.Background()}
+	claim := newFakeClaim()
+
+	event := domain.PaymentEvent{
+		TransactionID: "tx-metrics-1", SourceCountry: "CO", DestinationCountry: "US",
+		SourceCurrency: "COP", DestinationCurrency: "USD",
+		SourceAmount: "100.00", DestinationAmount: "50.00", FXRate: "0.01", Provider: "provider_a",
+	}
+	msg := &sarama.ConsumerMessage{Value: encode(t, event), Offset: 1, Partition: 0}
+
+	completedCounter := metrics.ProcessingTotal.WithLabelValues(domain.StatusCompleted)
+	before := testutil.ToFloat64(completedCounter)
+
+	done := make(chan error, 1)
+	go func() { done <- handler.ConsumeClaim(session, claim) }()
+	claim.messages <- msg
+	close(claim.messages)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ConsumeClaim did not return")
+	}
+
+	after := testutil.ToFloat64(completedCounter)
+	if after-before != 1 {
+		t.Errorf("expected payments_processing_total{status=completed} to increment by 1, went from %v to %v", before, after)
+	}
+}
+
+// TestConsumerHandler_MalformedEvent_IncrementsProcessingFailedTotal
+// verifies a non-retryable failure (malformed event, same scenario as
+// the DLQ test below) is recorded as both a processing failure and a
+// "failed" outcome.
+func TestConsumerHandler_MalformedEvent_IncrementsProcessingFailedTotal(t *testing.T) {
+	pool := workerpool.New(1, 1)
+	defer pool.Shutdown()
+
+	publisher := &fakePublisher{}
+	handler := newTestHandler(pool, processing.NewDefaultProcessor(), publisher)
+
+	session := &fakeSession{ctx: context.Background()}
+	claim := newFakeClaim()
+
+	msg := &sarama.ConsumerMessage{Value: []byte("not json"), Offset: 1, Partition: 0}
+
+	failedNonRetryable := metrics.ProcessingFailedTotal.WithLabelValues("false")
+	failedTotal := metrics.ProcessingTotal.WithLabelValues(domain.StatusFailed)
+	beforeFailed := testutil.ToFloat64(failedNonRetryable)
+	beforeTotal := testutil.ToFloat64(failedTotal)
+
+	done := make(chan error, 1)
+	go func() { done <- handler.ConsumeClaim(session, claim) }()
+	claim.messages <- msg
+	close(claim.messages)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ConsumeClaim did not return")
+	}
+
+	if after := testutil.ToFloat64(failedNonRetryable); after-beforeFailed != 1 {
+		t.Errorf("expected payments_processing_failed_total{retryable=false} to increment by 1, went from %v to %v", beforeFailed, after)
+	}
+	if after := testutil.ToFloat64(failedTotal); after-beforeTotal != 1 {
+		t.Errorf("expected payments_processing_total{status=failed} to increment by 1, went from %v to %v", beforeTotal, after)
 	}
 }
 

@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"time"
 )
@@ -12,14 +11,21 @@ import (
 // hang the /ready endpoint.
 const readinessPingTimeout = 2 * time.Second
 
+// Pinger is the subset of *sql.DB the readiness check depends on,
+// declared here so tests can substitute a fake instead of a real
+// database connection.
+type Pinger interface {
+	PingContext(ctx context.Context) error
+}
+
 // HealthHandler serves the liveness (/health) and readiness (/ready)
 // endpoints.
 type HealthHandler struct {
-	db *sql.DB
+	db Pinger
 }
 
 // NewHealthHandler builds a HealthHandler. db is used only by Ready.
-func NewHealthHandler(db *sql.DB) *HealthHandler {
+func NewHealthHandler(db Pinger) *HealthHandler {
 	return &HealthHandler{db: db}
 }
 
