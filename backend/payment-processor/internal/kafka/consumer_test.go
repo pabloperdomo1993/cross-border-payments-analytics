@@ -174,7 +174,7 @@ func TestConsumerHandler_MarksOffsetOnlyAfterSuccessfulProcessing(t *testing.T) 
 	event := domain.PaymentEvent{
 		TransactionID: "tx-1", SourceCountry: "CO", DestinationCountry: "US",
 		SourceCurrency: "COP", DestinationCurrency: "USD",
-		Amount: "100.00", FXRate: "0.01", Provider: "provider_a",
+		SourceAmount: "100.00", DestinationAmount: "50.00", FXRate: "0.01", Provider: "provider_a",
 	}
 	msg := &sarama.ConsumerMessage{Value: encode(t, event), Offset: 42, Partition: 0}
 
@@ -252,8 +252,8 @@ func TestConsumerHandler_SequentialWithinPartition(t *testing.T) {
 	session := &fakeSession{ctx: context.Background()}
 	claim := newFakeClaim()
 
-	event1 := domain.PaymentEvent{TransactionID: "tx-1", SourceCountry: "CO", DestinationCountry: "US", SourceCurrency: "COP", DestinationCurrency: "USD", Amount: "1.00", FXRate: "0.01", Provider: "p"}
-	event2 := domain.PaymentEvent{TransactionID: "tx-2", SourceCountry: "CO", DestinationCountry: "US", SourceCurrency: "COP", DestinationCurrency: "USD", Amount: "1.00", FXRate: "0.01", Provider: "p"}
+	event1 := domain.PaymentEvent{TransactionID: "tx-1", SourceCountry: "CO", DestinationCountry: "US", SourceCurrency: "COP", DestinationCurrency: "USD", SourceAmount: "1.00", DestinationAmount: "1.00", FXRate: "0.01", Provider: "p"}
+	event2 := domain.PaymentEvent{TransactionID: "tx-2", SourceCountry: "CO", DestinationCountry: "US", SourceCurrency: "COP", DestinationCurrency: "USD", SourceAmount: "1.00", DestinationAmount: "1.00", FXRate: "0.01", Provider: "p"}
 
 	done := make(chan error, 1)
 	go func() { done <- handler.ConsumeClaim(session, claim) }()
@@ -328,7 +328,7 @@ func TestConsumerHandler_ShutdownDoesNotMarkInFlightMessage(t *testing.T) {
 	session := &fakeSession{ctx: ctx}
 	claim := newFakeClaim()
 
-	event := domain.PaymentEvent{TransactionID: "tx-1", SourceCountry: "CO", DestinationCountry: "US", SourceCurrency: "COP", DestinationCurrency: "USD", Amount: "1.00", FXRate: "0.01", Provider: "p"}
+	event := domain.PaymentEvent{TransactionID: "tx-1", SourceCountry: "CO", DestinationCountry: "US", SourceCurrency: "COP", DestinationCurrency: "USD", SourceAmount: "1.00", DestinationAmount: "1.00", FXRate: "0.01", Provider: "p"}
 	claim.messages <- &sarama.ConsumerMessage{Value: encode(t, event), Offset: 1, Partition: 0}
 
 	done := make(chan error, 1)

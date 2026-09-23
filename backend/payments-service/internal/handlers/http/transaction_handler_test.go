@@ -52,11 +52,13 @@ func sampleTransaction(t *testing.T) *domain.Transaction {
 
 	tx, err := domain.NewTransaction(domain.NewTransactionParams{
 		ID:                  "550e8400-e29b-41d4-a716-446655440000",
+		IdempotencyKey:      "idem-key-1",
 		SourceCountry:       "CO",
 		DestinationCountry:  "US",
 		SourceCurrency:      "COP",
 		DestinationCurrency: "USD",
-		Amount:              amount,
+		SourceAmount:        amount,
+		DestinationAmount:   amount.Multiply(fxRate),
 		FXRate:              fxRate,
 		Provider:            "provider_a",
 	})
@@ -71,11 +73,12 @@ func TestTransactionHandler_Create_Valid(t *testing.T) {
 	handler := httphandler.NewTransactionHandler(&fakeCreateUseCase{tx: tx}, &fakeGetUseCase{}, discardLogger())
 
 	body := bytes.NewBufferString(`{
+		"idempotency_key": "idem-key-1",
 		"source_country": "CO",
 		"destination_country": "US",
 		"source_currency": "COP",
 		"destination_currency": "USD",
-		"amount": "4000000.00",
+		"source_amount": "4000000.00",
 		"fx_rate": "0.0002626",
 		"provider": "provider_a"
 	}`)
@@ -95,8 +98,11 @@ func TestTransactionHandler_Create_Valid(t *testing.T) {
 	if got["id"] != string(tx.ID) {
 		t.Errorf("expected id %q, got %v", tx.ID, got["id"])
 	}
-	if got["amount"] != "4000000.00" {
-		t.Errorf("expected amount as decimal string, got %v", got["amount"])
+	if got["source_amount"] != "4000000.00" {
+		t.Errorf("expected source_amount as decimal string, got %v", got["source_amount"])
+	}
+	if got["destination_amount"] != "1050.40" {
+		t.Errorf("expected destination_amount as decimal string, got %v", got["destination_amount"])
 	}
 }
 

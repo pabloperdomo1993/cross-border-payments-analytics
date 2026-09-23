@@ -12,11 +12,12 @@ import (
 // creating a transaction (as received from the HTTP layer, before any
 // domain parsing/validation happens).
 type CreateTransactionInput struct {
+	IdempotencyKey      string
 	SourceCountry       string
 	DestinationCountry  string
 	SourceCurrency      string
 	DestinationCurrency string
-	Amount              string
+	SourceAmount        string
 	FXRate              string
 	Provider            string
 }
@@ -38,9 +39,9 @@ func NewCreateTransaction(repo repository.TransactionRepository) *CreateTransact
 func (uc *CreateTransaction) Execute(ctx context.Context, input CreateTransactionInput) (*domain.Transaction, error) {
 	fields := map[string]string{}
 
-	amount, err := domain.ParseMoney(input.Amount)
+	sourceAmount, err := domain.ParseMoney(input.SourceAmount)
 	if err != nil {
-		fields["amount"] = err.Error()
+		fields["source_amount"] = err.Error()
 	}
 
 	fxRate, err := domain.ParseFXRate(input.FXRate)
@@ -59,11 +60,13 @@ func (uc *CreateTransaction) Execute(ctx context.Context, input CreateTransactio
 
 	tx, err := domain.NewTransaction(domain.NewTransactionParams{
 		ID:                  domain.TransactionID(id),
+		IdempotencyKey:      domain.IdempotencyKey(input.IdempotencyKey),
 		SourceCountry:       domain.CountryCode(input.SourceCountry),
 		DestinationCountry:  domain.CountryCode(input.DestinationCountry),
 		SourceCurrency:      domain.CurrencyCode(input.SourceCurrency),
 		DestinationCurrency: domain.CurrencyCode(input.DestinationCurrency),
-		Amount:              amount,
+		SourceAmount:        sourceAmount,
+		DestinationAmount:   sourceAmount.Multiply(fxRate),
 		FXRate:              fxRate,
 		Provider:            domain.Provider(input.Provider),
 	})

@@ -11,11 +11,12 @@ import (
 
 func validInput() application.CreateTransactionInput {
 	return application.CreateTransactionInput{
+		IdempotencyKey:      "idem-key-1",
 		SourceCountry:       "CO",
 		DestinationCountry:  "US",
 		SourceCurrency:      "COP",
 		DestinationCurrency: "USD",
-		Amount:              "4000000.00",
+		SourceAmount:        "4000000.00",
 		FXRate:              "0.0002626",
 		Provider:            "provider_a",
 	}
@@ -36,6 +37,9 @@ func TestCreateTransaction_Valid(t *testing.T) {
 	if tx.ID == "" {
 		t.Error("expected a generated transaction ID")
 	}
+	if tx.DestinationAmount.String() != "1050.40" {
+		t.Errorf("expected computed destination_amount 1050.40, got %s", tx.DestinationAmount.String())
+	}
 	if _, ok := repo.transactions[string(tx.ID)]; !ok {
 		t.Error("expected transaction to be persisted in the repository")
 	}
@@ -47,8 +51,8 @@ func TestCreateTransaction_Validation(t *testing.T) {
 		mutate    func(in *application.CreateTransactionInput)
 		wantField string
 	}{
-		{"invalid amount", func(in *application.CreateTransactionInput) { in.Amount = "0" }, "amount"},
-		{"non-numeric amount", func(in *application.CreateTransactionInput) { in.Amount = "abc" }, "amount"},
+		{"invalid amount", func(in *application.CreateTransactionInput) { in.SourceAmount = "0" }, "source_amount"},
+		{"non-numeric amount", func(in *application.CreateTransactionInput) { in.SourceAmount = "abc" }, "source_amount"},
 		{"invalid fx_rate", func(in *application.CreateTransactionInput) { in.FXRate = "0" }, "fx_rate"},
 		{"non-numeric fx_rate", func(in *application.CreateTransactionInput) { in.FXRate = "abc" }, "fx_rate"},
 		{"missing source country", func(in *application.CreateTransactionInput) { in.SourceCountry = "" }, "source_country"},
@@ -56,6 +60,7 @@ func TestCreateTransaction_Validation(t *testing.T) {
 		{"invalid source currency", func(in *application.CreateTransactionInput) { in.SourceCurrency = "xx" }, "source_currency"},
 		{"invalid destination currency", func(in *application.CreateTransactionInput) { in.DestinationCurrency = "US" }, "destination_currency"},
 		{"missing provider", func(in *application.CreateTransactionInput) { in.Provider = "" }, "provider"},
+		{"missing idempotency key", func(in *application.CreateTransactionInput) { in.IdempotencyKey = "" }, "idempotency_key"},
 	}
 
 	for _, tt := range tests {

@@ -38,44 +38,51 @@ func NewTransactionHandler(create CreateTransactionUseCase, get GetTransactionUs
 }
 
 type createTransactionRequest struct {
+	IdempotencyKey      string `json:"idempotency_key"`
 	SourceCountry       string `json:"source_country"`
 	DestinationCountry  string `json:"destination_country"`
 	SourceCurrency      string `json:"source_currency"`
 	DestinationCurrency string `json:"destination_currency"`
-	Amount              string `json:"amount"`
+	SourceAmount        string `json:"source_amount"`
 	FXRate              string `json:"fx_rate"`
 	Provider            string `json:"provider"`
 }
 
 // transactionResponse mirrors domain.Transaction for JSON output.
-// Amount and FXRate are serialized as decimal strings, matching the
-// request format, so clients never have to deal with binary
+// Monetary fields and FXRate are serialized as decimal strings, matching
+// the request format, so clients never have to deal with binary
 // floating-point precision issues either.
 type transactionResponse struct {
 	ID                  string `json:"id"`
+	IdempotencyKey      string `json:"idempotency_key"`
 	SourceCountry       string `json:"source_country"`
 	DestinationCountry  string `json:"destination_country"`
 	SourceCurrency      string `json:"source_currency"`
 	DestinationCurrency string `json:"destination_currency"`
-	Amount              string `json:"amount"`
+	SourceAmount        string `json:"source_amount"`
+	DestinationAmount   string `json:"destination_amount"`
 	FXRate              string `json:"fx_rate"`
 	Provider            string `json:"provider"`
 	Status              string `json:"status"`
 	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 func toTransactionResponse(tx *domain.Transaction) transactionResponse {
 	return transactionResponse{
 		ID:                  string(tx.ID),
+		IdempotencyKey:      string(tx.IdempotencyKey),
 		SourceCountry:       string(tx.SourceCountry),
 		DestinationCountry:  string(tx.DestinationCountry),
 		SourceCurrency:      string(tx.SourceCurrency),
 		DestinationCurrency: string(tx.DestinationCurrency),
-		Amount:              tx.Amount.String(),
+		SourceAmount:        tx.SourceAmount.String(),
+		DestinationAmount:   tx.DestinationAmount.String(),
 		FXRate:              tx.FXRate.String(),
 		Provider:            string(tx.Provider),
 		Status:              string(tx.Status),
 		CreatedAt:           tx.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:           tx.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -90,11 +97,12 @@ func (h *TransactionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx, err := h.create.Execute(r.Context(), application.CreateTransactionInput{
+		IdempotencyKey:      req.IdempotencyKey,
 		SourceCountry:       req.SourceCountry,
 		DestinationCountry:  req.DestinationCountry,
 		SourceCurrency:      req.SourceCurrency,
 		DestinationCurrency: req.DestinationCurrency,
-		Amount:              req.Amount,
+		SourceAmount:        req.SourceAmount,
 		FXRate:              req.FXRate,
 		Provider:            req.Provider,
 	})

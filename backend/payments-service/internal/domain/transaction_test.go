@@ -7,14 +7,18 @@ import (
 )
 
 func validParams() NewTransactionParams {
+	sourceAmount := Money(400_000_000) // 4,000,000.00 COP in minor units
+	fxRate := FXRate(26260)            // 0.00026260
 	return NewTransactionParams{
 		ID:                  TransactionID("550e8400-e29b-41d4-a716-446655440000"),
+		IdempotencyKey:      IdempotencyKey("idem-key-1"),
 		SourceCountry:       CountryCode("CO"),
 		DestinationCountry:  CountryCode("US"),
 		SourceCurrency:      CurrencyCode("COP"),
 		DestinationCurrency: CurrencyCode("USD"),
-		Amount:              Money(400_000_000), // 4,000,000.00 COP in minor units
-		FXRate:              FXRate(26260),      // 0.00026260
+		SourceAmount:        sourceAmount,
+		DestinationAmount:   sourceAmount.Multiply(fxRate),
+		FXRate:              fxRate,
 		Provider:            Provider("provider_a"),
 		CreatedAt:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -28,6 +32,9 @@ func TestNewTransaction_Valid(t *testing.T) {
 
 	if tx.Status != StatusPending {
 		t.Errorf("expected initial status %q, got %q", StatusPending, tx.Status)
+	}
+	if !tx.UpdatedAt.Equal(tx.CreatedAt) {
+		t.Errorf("expected UpdatedAt to equal CreatedAt on creation, got %v vs %v", tx.UpdatedAt, tx.CreatedAt)
 	}
 }
 
@@ -55,13 +62,17 @@ func TestNewTransaction_Validation(t *testing.T) {
 	}{
 		{"empty ID", func(p *NewTransactionParams) { p.ID = "" }, "id"},
 		{"invalid ID format", func(p *NewTransactionParams) { p.ID = "not-a-uuid" }, "id"},
+		{"empty idempotency key", func(p *NewTransactionParams) { p.IdempotencyKey = "" }, "idempotency_key"},
+		{"blank idempotency key", func(p *NewTransactionParams) { p.IdempotencyKey = "   " }, "idempotency_key"},
 		{"invalid source country lowercase", func(p *NewTransactionParams) { p.SourceCountry = "co" }, "source_country"},
 		{"invalid destination country wrong length", func(p *NewTransactionParams) { p.DestinationCountry = "USA" }, "destination_country"},
 		{"empty source country", func(p *NewTransactionParams) { p.SourceCountry = "" }, "source_country"},
 		{"invalid source currency lowercase", func(p *NewTransactionParams) { p.SourceCurrency = "cop" }, "source_currency"},
 		{"invalid destination currency wrong length", func(p *NewTransactionParams) { p.DestinationCurrency = "USDD" }, "destination_currency"},
-		{"zero amount", func(p *NewTransactionParams) { p.Amount = 0 }, "amount"},
-		{"negative amount", func(p *NewTransactionParams) { p.Amount = -100 }, "amount"},
+		{"zero source amount", func(p *NewTransactionParams) { p.SourceAmount = 0 }, "source_amount"},
+		{"negative source amount", func(p *NewTransactionParams) { p.SourceAmount = -100 }, "source_amount"},
+		{"zero destination amount", func(p *NewTransactionParams) { p.DestinationAmount = 0 }, "destination_amount"},
+		{"negative destination amount", func(p *NewTransactionParams) { p.DestinationAmount = -100 }, "destination_amount"},
 		{"zero fx rate", func(p *NewTransactionParams) { p.FXRate = 0 }, "fx_rate"},
 		{"negative fx rate", func(p *NewTransactionParams) { p.FXRate = -1 }, "fx_rate"},
 		{"empty provider", func(p *NewTransactionParams) { p.Provider = "" }, "provider"},
@@ -91,7 +102,7 @@ func TestNewTransaction_Validation(t *testing.T) {
 
 func TestNewTransaction_MultipleInvalidFields(t *testing.T) {
 	params := validParams()
-	params.Amount = 0
+	params.SourceAmount = 0
 	params.Provider = ""
 
 	_, err := NewTransaction(params)
@@ -206,6 +217,41 @@ func TestMoney_String_RoundTrip(t *testing.T) {
 	}
 	if got := m.String(); got != "4000000.00" {
 		t.Errorf("expected round-trip %q, got %q", "4000000.00", got)
+	}
+}
+
+func TestMoney_Multiply(t *testing.T) {
+	tests := []struct {
+		name   string
+		amount string
+		rate   string
+		want   string
+	}{
+		// 4,000,000.00 COP at 0.0002626 -> 1,050.40 USD, exactly.
+		{"exact division", "4000000.00", "0.0002626", "1050.40"},
+		// 10.00 at 1.00 -> 10.00, identity check.
+		{"identity rate", "10.00", "1", "10.00"},
+		// A case requiring round-half-up: 1.00 * 0.505 = 0.505 exactly,
+		// which rounds up to 0.51 at 2 decimal places.
+		{"rounds half up", "1.00", "0.505", "0.51"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			amount, err := ParseMoney(tt.amount)
+			if err != nil {
+				t.Fatalf("unexpected error parsing amount: %v", err)
+			}
+			rate, err := ParseFXRate(tt.rate)
+			if err != nil {
+				t.Fatalf("unexpected error parsing rate: %v", err)
+			}
+
+			got := amount.Multiply(rate)
+			if got.String() != tt.want {
+				t.Errorf("expected %s, got %s", tt.want, got.String())
+			}
+		})
 	}
 }
 

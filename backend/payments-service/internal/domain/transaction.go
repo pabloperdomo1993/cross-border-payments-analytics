@@ -5,6 +5,7 @@ package domain
 
 import (
 	"fmt"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -112,6 +113,36 @@ func (m Money) Validate() error {
 	return nil
 }
 
+// Multiply computes m converted at rate (e.g. a source amount converted
+// to its destination-currency equivalent), rounding half-up to the
+// nearest minor unit.
+//
+// This goes through math/big rather than plain int64 arithmetic: m and
+// rate are both already scaled integers (m in minor units, rate scaled
+// by FXRateScale), so their product can exceed int64's range long
+// before the final result would (e.g. a large minor-unit amount times a
+// rate near FXRateScale's own magnitude). big.Int makes the
+// multiplication exact regardless of size, and the division back down
+// by FXRateScale is exact integer division with explicit rounding —
+// float64 is never involved at any step.
+func (m Money) Multiply(rate FXRate) Money {
+	product := new(big.Int).Mul(big.NewInt(int64(m)), big.NewInt(int64(rate)))
+	scale := big.NewInt(FXRateScale)
+
+	quotient := new(big.Int)
+	remainder := new(big.Int)
+	quotient.QuoRem(product, scale, remainder)
+
+	// Round half up. m and rate are always non-negative in normal
+	// domain usage (both are validated > 0 before this is called), so
+	// product and remainder are non-negative too.
+	if new(big.Int).Mul(remainder, big.NewInt(2)).Cmp(scale) >= 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+
+	return Money(quotient.Int64())
+}
+
 // fxRateScaleDigits is the number of decimal digits FXRate strings carry.
 const fxRateScaleDigits = 8
 
@@ -214,6 +245,21 @@ func formatFixedPoint(units int64, scale int) string {
 	return fmt.Sprintf("%s%s.%s", sign, intPart, fracPart)
 }
 
+// IdempotencyKey is a caller-supplied token that lets a client safely
+// retry a transaction creation request without producing a duplicate.
+// It is enforced unique at the database level (see migrations); a
+// second request with the same key fails with ErrConflict rather than
+// creating a second transaction.
+type IdempotencyKey string
+
+// Validate reports whether the idempotency key is non-empty.
+func (k IdempotencyKey) Validate() error {
+	if strings.TrimSpace(string(k)) == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	return nil
+}
+
 // Provider identifies the external payment/FX provider handling a
 // transaction (e.g. "provider_a"). It is intentionally a lightweight
 // string type for now — a dedicated provider entity/model is out of
@@ -272,27 +318,35 @@ func (s TransactionStatus) canTransitionTo(target TransactionStatus) bool {
 // external provider.
 type Transaction struct {
 	ID                  TransactionID
+	IdempotencyKey      IdempotencyKey
 	SourceCountry       CountryCode
 	DestinationCountry  CountryCode
 	SourceCurrency      CurrencyCode
 	DestinationCurrency CurrencyCode
-	Amount              Money
+	SourceAmount        Money
+	DestinationAmount   Money
 	FXRate              FXRate
 	Provider            Provider
 	Status              TransactionStatus
 	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // NewTransactionParams carries the inputs required to create a new
 // Transaction. CreatedAt is optional; if zero, the current time (UTC) is
-// used.
+// used. DestinationAmount is computed by the caller (typically via
+// SourceAmount.Multiply(FXRate)) rather than derived here, keeping this
+// constructor a uniform "validate the given fields" boundary like every
+// other field.
 type NewTransactionParams struct {
 	ID                  TransactionID
+	IdempotencyKey      IdempotencyKey
 	SourceCountry       CountryCode
 	DestinationCountry  CountryCode
 	SourceCurrency      CurrencyCode
 	DestinationCurrency CurrencyCode
-	Amount              Money
+	SourceAmount        Money
+	DestinationAmount   Money
 	FXRate              FXRate
 	Provider            Provider
 	CreatedAt           time.Time
@@ -307,6 +361,9 @@ func NewTransaction(p NewTransactionParams) (*Transaction, error) {
 	if err := p.ID.Validate(); err != nil {
 		fields["id"] = err.Error()
 	}
+	if err := p.IdempotencyKey.Validate(); err != nil {
+		fields["idempotency_key"] = err.Error()
+	}
 	if err := p.SourceCountry.Validate(); err != nil {
 		fields["source_country"] = err.Error()
 	}
@@ -319,8 +376,11 @@ func NewTransaction(p NewTransactionParams) (*Transaction, error) {
 	if err := p.DestinationCurrency.Validate(); err != nil {
 		fields["destination_currency"] = err.Error()
 	}
-	if err := p.Amount.Validate(); err != nil {
-		fields["amount"] = err.Error()
+	if err := p.SourceAmount.Validate(); err != nil {
+		fields["source_amount"] = err.Error()
+	}
+	if err := p.DestinationAmount.Validate(); err != nil {
+		fields["destination_amount"] = err.Error()
 	}
 	if err := p.FXRate.Validate(); err != nil {
 		fields["fx_rate"] = err.Error()
@@ -340,15 +400,18 @@ func NewTransaction(p NewTransactionParams) (*Transaction, error) {
 
 	return &Transaction{
 		ID:                  p.ID,
+		IdempotencyKey:      p.IdempotencyKey,
 		SourceCountry:       p.SourceCountry,
 		DestinationCountry:  p.DestinationCountry,
 		SourceCurrency:      p.SourceCurrency,
 		DestinationCurrency: p.DestinationCurrency,
-		Amount:              p.Amount,
+		SourceAmount:        p.SourceAmount,
+		DestinationAmount:   p.DestinationAmount,
 		FXRate:              p.FXRate,
 		Provider:            p.Provider,
 		Status:              StatusPending,
 		CreatedAt:           createdAt,
+		UpdatedAt:           createdAt,
 	}, nil
 }
 
@@ -359,6 +422,7 @@ func (t *Transaction) transitionTo(target TransactionStatus) error {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, t.Status, target)
 	}
 	t.Status = target
+	t.UpdatedAt = time.Now().UTC()
 	return nil
 }
 

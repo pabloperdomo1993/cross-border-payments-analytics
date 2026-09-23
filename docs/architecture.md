@@ -140,7 +140,7 @@ The architecture is designed around the following principles:
                                            React
 ```
 
-Implementation status: `payments-service` (HTTP + MariaDB) and `payment-processor` (Kafka consumer/worker pool + producer) are implemented, per section 5 below. Analytics Service and ClickHouse are not yet implemented. `payments-service` does not yet publish to `payments.created` — see section 5's limitations.
+Implementation status: `payments-service` (HTTP + MariaDB), `payment-processor` (Kafka consumer/worker pool + producer), and `analytics-service` (Kafka consumer + ClickHouse + HTTP analytics API) are all implemented, per sections 5–6 below. `payments-service` does not yet publish to `payments.created` — see section 5's limitations; `analytics-service` is verified end-to-end via manually-produced test messages in the interim.
 
 ---
 
@@ -292,3 +292,92 @@ transaction/correlation IDs as labels), and
   `sarama.ConsumerGroupSession`/`ConsumerGroupClaim`, which is enough to
   prove the offset-ordering property but doesn't exercise real broker
   behavior (rebalances, network partitions, etc).
+
+---
+
+## 6. SQL & data modeling: MariaDB, ClickHouse, and analytics-service
+
+### MariaDB (OLTP): schema evolution
+
+`payments-service`'s `transactions` table grew across three versioned
+migrations rather than being redesigned in place:
+
+- **001** — the original table: `id`, `source_country`,
+  `destination_country`, `source_currency`, `destination_currency`,
+  `amount`, `fx_rate`, `provider`, `status`, `created_at`. Only
+  `PRIMARY KEY (id)`.
+- **002** — added `idempotency_key` (`VARCHAR(128)`, unique index —
+  lets a client safely retry a creation request without producing a
+  duplicate row), renamed `amount` → `source_amount`, added
+  `destination_amount` (both sides of the currency conversion, not just
+  the sending side), and `updated_at`.
+- **003** — added the composite index `(provider, status, created_at)`,
+  measured in `docs/performance/sql-optimization.md`. No blind
+  single-column indexes: this one composite serves provider-only,
+  provider+status, and provider+status+created_at queries via leftmost
+  -prefix matching.
+
+All monetary columns are `DECIMAL`, never `FLOAT`/`DOUBLE`; the Go
+domain layer mirrors this with fixed-point integer types and a
+`Money.Multiply(FXRate)` helper implemented via `math/big` (never
+`float64`) to compute `destination_amount` from `source_amount` and
+`fx_rate` without rounding error or overflow.
+
+### ClickHouse (OLAP): `payments_analytics`
+
+A deliberately different schema from MariaDB's — see the extensive
+comments in `backend/analytics-service/migrations/001_create_payments_analytics.sql`
+for the full reasoning. Summary: `MergeTree`, `PARTITION BY
+toYYYYMM(created_at)`, `ORDER BY (source_country, destination_country,
+created_at)` (optimized for the corridor-volume query this system leads
+with — a documented, explicit trade-off against currency/provider-first
+queries), `LowCardinality(String)` for every low-cardinality dimension
+column, native `Decimal`/`DateTime64`/`UUID` types.
+
+### analytics-service
+
+New third Go service, following the same conventions as
+`payments-service`/`payment-processor` (`cmd/api`, `internal/{config,
+domain, repository, handlers/http}`, env-var config with fail-fast
+validation, `signal.NotifyContext` graceful shutdown). Two ingestion
+paths into ClickHouse:
+
+- **Real-time**: a Kafka consumer batches `payments.processed` and
+  `payments.dlq` messages (by count or a flush-interval timer — never
+  row-by-row, which is bad practice for ClickHouse) and bulk-inserts via
+  `clickhouse-go/v2`'s native `PrepareBatch`. Offsets for a batch are
+  only marked after that batch's insert succeeds.
+- **Bulk/benchmark**: `scripts/seed`, a standalone tool, loads a large
+  deterministic dataset directly into both MariaDB and ClickHouse for
+  the performance experiments below — intentionally bypassing Kafka,
+  since pushing a million individual messages through the real pipeline
+  would test Kafka throughput, not SQL performance.
+
+This required extending `payment-processor`'s `Outcome` Kafka contract
+(previously just `{id, status, reason}`) to carry the full payment
+dimensions, since that topic is `analytics-service`'s only real input.
+
+HTTP API (`/api/v1/analytics/{corridors,currencies,countries,providers,
+timeseries}`, plus `/health`/`/ready`) uses only parameterized
+ClickHouse queries — filter *values* are never string-concatenated into
+SQL, though the countries endpoint's grouping *column* and the
+time-series endpoint's bucketing *function* are switched via
+code-controlled (never user-supplied) identifiers.
+
+### Performance experiments
+
+Two documents under `docs/performance/` contain **real, measured**
+results (never fabricated) from a 1,000,000-row deterministic dataset:
+
+- `sql-optimization.md` — a MariaDB before/after index experiment.
+  Honestly reports a nuanced result: the composite index made
+  `COUNT(*)`-shaped queries ~400–450x faster, but the actual
+  row-returning query it was built around showed no wall-clock
+  improvement, because per-row lookups back into the clustered index for
+  non-indexed columns (plus transferring ~20K rows) dominate at ~2%
+  selectivity — a real lesson about index limits, not a validation
+  failure.
+- `mariadb-vs-clickhouse.md` — the same corridor-volume aggregation on
+  equivalent datasets in both engines (~150x faster on ClickHouse),
+  framed explicitly as an OLTP-vs-OLAP architectural illustration, with
+  a correctness cross-check between the two result sets.

@@ -27,27 +27,31 @@ func NewTransactionRepository(db *sql.DB) *TransactionRepository {
 
 const insertTransactionQuery = `
 INSERT INTO transactions (
-	id, source_country, destination_country,
+	id, idempotency_key, source_country, destination_country,
 	source_currency, destination_currency,
-	amount, fx_rate, provider, status, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	source_amount, destination_amount, fx_rate, provider, status,
+	created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
-// Create persists a new transaction. Amount and FXRate are written as
-// their canonical decimal strings so the DECIMAL columns always receive
-// an exact value — no float64 conversion ever happens.
+// Create persists a new transaction. Monetary fields and FXRate are
+// written as their canonical decimal strings so the DECIMAL columns
+// always receive an exact value — no float64 conversion ever happens.
 func (r *TransactionRepository) Create(ctx context.Context, tx *domain.Transaction) error {
 	_, err := r.db.ExecContext(ctx, insertTransactionQuery,
 		string(tx.ID),
+		string(tx.IdempotencyKey),
 		string(tx.SourceCountry),
 		string(tx.DestinationCountry),
 		string(tx.SourceCurrency),
 		string(tx.DestinationCurrency),
-		tx.Amount.String(),
+		tx.SourceAmount.String(),
+		tx.DestinationAmount.String(),
 		tx.FXRate.String(),
 		string(tx.Provider),
 		string(tx.Status),
 		tx.CreatedAt,
+		tx.UpdatedAt,
 	)
 	if err != nil {
 		if isDuplicateKeyErr(err) {
@@ -59,9 +63,10 @@ func (r *TransactionRepository) Create(ctx context.Context, tx *domain.Transacti
 }
 
 const findTransactionByIDQuery = `
-SELECT id, source_country, destination_country,
+SELECT id, idempotency_key, source_country, destination_country,
        source_currency, destination_currency,
-       amount, fx_rate, provider, status, created_at
+       source_amount, destination_amount, fx_rate, provider, status,
+       created_at, updated_at
 FROM transactions
 WHERE id = ?
 `
@@ -72,16 +77,18 @@ func (r *TransactionRepository) FindByID(ctx context.Context, id string) (*domai
 	row := r.db.QueryRowContext(ctx, findTransactionByIDQuery, id)
 
 	var (
-		txID, sourceCountry, destinationCountry string
-		sourceCurrency, destinationCurrency     string
-		amount, fxRate, provider, status        string
-		createdAt                               time.Time
+		txID, idempotencyKey, sourceCountry, destinationCountry string
+		sourceCurrency, destinationCurrency                     string
+		sourceAmount, destinationAmount, fxRate                 string
+		provider, status                                        string
+		createdAt, updatedAt                                    time.Time
 	)
 
 	err := row.Scan(
-		&txID, &sourceCountry, &destinationCountry,
+		&txID, &idempotencyKey, &sourceCountry, &destinationCountry,
 		&sourceCurrency, &destinationCurrency,
-		&amount, &fxRate, &provider, &status, &createdAt,
+		&sourceAmount, &destinationAmount, &fxRate, &provider, &status,
+		&createdAt, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -90,9 +97,13 @@ func (r *TransactionRepository) FindByID(ctx context.Context, id string) (*domai
 		return nil, fmt.Errorf("%w: find transaction: %v", domain.ErrRepository, err)
 	}
 
-	parsedAmount, err := domain.ParseMoney(amount)
+	parsedSourceAmount, err := domain.ParseMoney(sourceAmount)
 	if err != nil {
-		return nil, fmt.Errorf("%w: corrupt amount for transaction %q: %v", domain.ErrRepository, txID, err)
+		return nil, fmt.Errorf("%w: corrupt source_amount for transaction %q: %v", domain.ErrRepository, txID, err)
+	}
+	parsedDestinationAmount, err := domain.ParseMoney(destinationAmount)
+	if err != nil {
+		return nil, fmt.Errorf("%w: corrupt destination_amount for transaction %q: %v", domain.ErrRepository, txID, err)
 	}
 	parsedFXRate, err := domain.ParseFXRate(fxRate)
 	if err != nil {
@@ -101,15 +112,18 @@ func (r *TransactionRepository) FindByID(ctx context.Context, id string) (*domai
 
 	return &domain.Transaction{
 		ID:                  domain.TransactionID(txID),
+		IdempotencyKey:      domain.IdempotencyKey(idempotencyKey),
 		SourceCountry:       domain.CountryCode(sourceCountry),
 		DestinationCountry:  domain.CountryCode(destinationCountry),
 		SourceCurrency:      domain.CurrencyCode(sourceCurrency),
 		DestinationCurrency: domain.CurrencyCode(destinationCurrency),
-		Amount:              parsedAmount,
+		SourceAmount:        parsedSourceAmount,
+		DestinationAmount:   parsedDestinationAmount,
 		FXRate:              parsedFXRate,
 		Provider:            domain.Provider(provider),
 		Status:              domain.TransactionStatus(status),
 		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
 	}, nil
 }
 

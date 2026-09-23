@@ -112,6 +112,57 @@ services:
     ports:
       - "9090:9090"
 
+  # ClickHouse OLAP store for analytics-service. Migrations under
+  # backend/analytics-service/migrations run automatically on first
+  # boot via /docker-entrypoint-initdb.d, the same convention already
+  # used for mariadb above.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: analytics
+      # The official image disables network access entirely for the
+      # 'default' user unless a password is set — local dev-only
+      # credential, not a secret.
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: analytics
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./backend/analytics-service/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  analytics-service:
+    build:
+      context: ./backend/analytics-service
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      HTTP_PORT: "8082"
+      CLICKHOUSE_ADDR: clickhouse:9000
+      CLICKHOUSE_DATABASE: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: analytics
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: analytics-service
+      KAFKA_TOPIC_PAYMENTS_PROCESSED: payments.processed
+      KAFKA_TOPIC_PAYMENTS_DLQ: payments.dlq
+      ANALYTICS_BATCH_MAX_SIZE: "500"
+      ANALYTICS_BATCH_MAX_INTERVAL: "2s"
+    ports:
+      - "8082:8082"
+
 volumes:
   mariadb_data:
   kafka_data:
+  clickhouse_data:

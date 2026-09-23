@@ -39,6 +39,7 @@ var (
 // this from configuration or a reference-data service.
 var supportedCurrencies = map[string]bool{
 	"USD": true, "COP": true, "MXN": true, "BRL": true, "EUR": true,
+	"ARS": true, "CLP": true,
 }
 
 // Process validates event and returns the resulting Outcome. All
@@ -63,8 +64,11 @@ func (p *DefaultProcessor) Process(ctx context.Context, event domain.PaymentEven
 	if !supportedCurrencies[event.SourceCurrency] || !supportedCurrencies[event.DestinationCurrency] {
 		return domain.Outcome{}, NonRetryable(fmt.Errorf("%w: %s/%s", ErrUnsupportedCurrency, event.SourceCurrency, event.DestinationCurrency))
 	}
-	if !isPositiveDecimal(event.Amount) {
-		return domain.Outcome{}, NonRetryable(fmt.Errorf("%w: invalid amount %q", ErrInvalidPaymentData, event.Amount))
+	if !isPositiveDecimal(event.SourceAmount) {
+		return domain.Outcome{}, NonRetryable(fmt.Errorf("%w: invalid source_amount %q", ErrInvalidPaymentData, event.SourceAmount))
+	}
+	if !isPositiveDecimal(event.DestinationAmount) {
+		return domain.Outcome{}, NonRetryable(fmt.Errorf("%w: invalid destination_amount %q", ErrInvalidPaymentData, event.DestinationAmount))
 	}
 	if !isPositiveDecimal(event.FXRate) {
 		return domain.Outcome{}, NonRetryable(fmt.Errorf("%w: invalid fx_rate %q", ErrInvalidPaymentData, event.FXRate))
@@ -73,7 +77,19 @@ func (p *DefaultProcessor) Process(ctx context.Context, event domain.PaymentEven
 		return domain.Outcome{}, NonRetryable(fmt.Errorf("%w: missing provider", ErrInvalidPaymentData))
 	}
 
-	return domain.Outcome{TransactionID: event.TransactionID, Status: domain.StatusCompleted}, nil
+	return domain.Outcome{
+		TransactionID:       event.TransactionID,
+		SourceCountry:       event.SourceCountry,
+		DestinationCountry:  event.DestinationCountry,
+		SourceCurrency:      event.SourceCurrency,
+		DestinationCurrency: event.DestinationCurrency,
+		SourceAmount:        event.SourceAmount,
+		DestinationAmount:   event.DestinationAmount,
+		FXRate:              event.FXRate,
+		Provider:            event.Provider,
+		CreatedAt:           event.CreatedAt,
+		Status:              domain.StatusCompleted,
+	}, nil
 }
 
 // isPositiveDecimal reports whether s is a non-negative decimal string

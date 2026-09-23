@@ -17,9 +17,11 @@ func validEvent() domain.PaymentEvent {
 		DestinationCountry:  "US",
 		SourceCurrency:      "COP",
 		DestinationCurrency: "USD",
-		Amount:              "4000000.00",
+		SourceAmount:        "4000000.00",
+		DestinationAmount:   "1050.40",
 		FXRate:              "0.0002626",
 		Provider:            "provider_a",
+		CreatedAt:           "2024-01-01T00:00:00Z",
 	}
 }
 
@@ -48,9 +50,9 @@ func TestDefaultProcessor_NonRetryableErrors(t *testing.T) {
 		{"invalid destination country", func(e *domain.PaymentEvent) { e.DestinationCountry = "USA" }},
 		{"invalid source currency format", func(e *domain.PaymentEvent) { e.SourceCurrency = "cop" }},
 		{"unsupported currency", func(e *domain.PaymentEvent) { e.SourceCurrency = "XXX" }},
-		{"zero amount", func(e *domain.PaymentEvent) { e.Amount = "0.00" }},
-		{"non-numeric amount", func(e *domain.PaymentEvent) { e.Amount = "abc" }},
-		{"negative amount", func(e *domain.PaymentEvent) { e.Amount = "-5.00" }},
+		{"zero amount", func(e *domain.PaymentEvent) { e.SourceAmount = "0.00" }},
+		{"non-numeric amount", func(e *domain.PaymentEvent) { e.SourceAmount = "abc" }},
+		{"negative amount", func(e *domain.PaymentEvent) { e.SourceAmount = "-5.00" }},
 		{"zero fx_rate", func(e *domain.PaymentEvent) { e.FXRate = "0" }},
 		{"missing provider", func(e *domain.PaymentEvent) { e.Provider = "" }},
 	}

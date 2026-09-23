@@ -168,7 +168,20 @@ func (h *ConsumerHandler) process(ctx context.Context, msg *sarama.ConsumerMessa
 // failure that we successfully recorded to the DLQ is never treated as
 // an unhandled/dropped message.
 func (h *ConsumerHandler) deadLetter(ctx context.Context, msg *sarama.ConsumerMessage, event domain.PaymentEvent, cause error) error {
-	outcome := domain.Outcome{TransactionID: event.TransactionID, Status: domain.StatusFailed, Reason: cause.Error()}
+	outcome := domain.Outcome{
+		TransactionID:       event.TransactionID,
+		SourceCountry:       event.SourceCountry,
+		DestinationCountry:  event.DestinationCountry,
+		SourceCurrency:      event.SourceCurrency,
+		DestinationCurrency: event.DestinationCurrency,
+		SourceAmount:        event.SourceAmount,
+		DestinationAmount:   event.DestinationAmount,
+		FXRate:              event.FXRate,
+		Provider:            event.Provider,
+		CreatedAt:           event.CreatedAt,
+		Status:              domain.StatusFailed,
+		Reason:              cause.Error(),
+	}
 	payload, err := json.Marshal(outcome)
 	if err != nil {
 		payload = msg.Value
