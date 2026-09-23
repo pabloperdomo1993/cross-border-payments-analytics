@@ -24,7 +24,7 @@ Transactional Outbox's delivery semantics, and the testing strategy.
 
 | Service | Language | Role | URL / port |
 |---|---|---|---|
-| `frontend` | React + TypeScript | Web UI (stock scaffold) | http://localhost:5173 |
+| `frontend` | React + TypeScript | Web UI — dashboard, payments table, analytics charts | http://localhost:5173 |
 | `payments-service` | Go | HTTP API, OLTP writes, outbox relay | http://localhost:8080 |
 | `payment-processor` | Go | Kafka consumer, bounded worker pool | http://localhost:9091 (`/health`, `/metrics`) |
 | `analytics-service` | Go | Kafka consumer, ClickHouse, analytics HTTP API | http://localhost:8082 |
