@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and replace every dummy value below with a
+# real one before running `terraform apply` against an actual AWS
+# account. Nothing here has been applied or validated against real AWS
+# (see infrastructure/README.md).
+
+environment = "prod"
+aws_region  = "us-east-1"
+vpc_cidr    = "10.2.0.0/16"
+
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+
+frontend_bucket_name = "cbpa-prod-frontend-123456789012"
+
+# Prod should generally use a real custom domain rather than leaving
+# these null (shown here only as placeholders):
+frontend_domain_name         = "app.example.com"
+frontend_acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/11111111-1111-1111-1111-111111111111"

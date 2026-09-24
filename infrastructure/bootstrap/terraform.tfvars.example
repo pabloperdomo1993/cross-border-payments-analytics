@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in real values before running this
+# once. Every value below is a placeholder — none of this is a real AWS
+# account, bucket, or table.
+
+aws_region        = "us-east-1"
+state_bucket_name = "cbpa-terraform-state-123456789012" # must be globally unique across all of AWS
+lock_table_name   = "cbpa-terraform-locks"

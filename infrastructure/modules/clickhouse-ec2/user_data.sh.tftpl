@@ -1,0 +1,40 @@
+#!/bin/bash
+# Installs Docker and runs the same clickhouse/clickhouse-server:24.8
+# image the local docker-compose.yml uses, persisting data on the
+# separately-attached EBS volume (see main.tf's aws_volume_attachment)
+# instead of the instance's root volume.
+#
+# NOTE (honestly documented, not silently glossed over): this does NOT
+# apply backend/analytics-service/migrations/*.sql the way the local
+# docker-compose setup does via /docker-entrypoint-initdb.d — those
+# files live in this repo, not on this instance. Schema setup here is a
+# deliberate follow-up step (e.g. a small CI job that runs the same .sql
+# files against this instance's ClickHouse HTTP interface after it's
+# up), not yet wired into this Terraform module.
+set -euo pipefail
+
+dnf install -y docker
+systemctl enable --now docker
+
+# Wait for the attached EBS volume to appear, then format it (only if
+# it doesn't already have a filesystem — safe to re-run on reboot).
+DEVICE=/dev/xvdf
+until [ -e "$DEVICE" ]; do sleep 2; done
+if ! blkid "$DEVICE" > /dev/null 2>&1; then
+  mkfs -t xfs "$DEVICE"
+fi
+
+mkdir -p /mnt/clickhouse-data
+mount "$DEVICE" /mnt/clickhouse-data
+echo "$DEVICE /mnt/clickhouse-data xfs defaults,nofail 0 2" >> /etc/fstab
+
+docker run -d \
+  --name clickhouse \
+  --restart unless-stopped \
+  -p 8123:8123 \
+  -p 9000:9000 \
+  -e CLICKHOUSE_DB=${database_name} \
+  -e CLICKHOUSE_USER=default \
+  -e CLICKHOUSE_PASSWORD='${clickhouse_password}' \
+  -v /mnt/clickhouse-data:/var/lib/clickhouse \
+  clickhouse/clickhouse-server:24.8

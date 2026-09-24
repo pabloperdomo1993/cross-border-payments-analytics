@@ -1,0 +1,26 @@
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: '${job_name}'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['localhost:${port}']
+
+exporters:
+  prometheusremotewrite:
+    endpoint: '${remote_write_endpoint}'
+    auth:
+      authenticator: sigv4auth
+
+extensions:
+  sigv4auth:
+    region: '${aws_region}'
+    service: 'aps'
+
+service:
+  extensions: [sigv4auth]
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      exporters: [prometheusremotewrite]

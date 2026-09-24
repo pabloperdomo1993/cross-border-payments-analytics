@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars and replace every dummy value below with a
+# real one before running `terraform apply` against an actual AWS
+# account. Nothing here has been applied or validated against real AWS
+# (see infrastructure/README.md).
+
+environment = "dev"
+aws_region  = "us-east-1"
+vpc_cidr    = "10.0.0.0/16"
+
+# Dummy ACM certificate ARN — replace with a real one issued via ACM in
+# aws_region for the ALB's HTTPS listener.
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+
+# S3 bucket names are global across ALL AWS accounts — this dummy value
+# WILL collide with someone else's bucket; pick something unique.
+frontend_bucket_name = "cbpa-dev-frontend-123456789012"
+
+# Leave both null to use only CloudFront's own *.cloudfront.net domain
+# (fine for dev). Set both to use a real custom domain.
+frontend_domain_name         = null
+frontend_acm_certificate_arn = null

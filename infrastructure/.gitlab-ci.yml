@@ -1,0 +1,131 @@
+# Terraform pipeline for infrastructure/. Lives here rather than at the
+# repo root because this task's scope is deliberately confined to
+# infrastructure/ — wire it up in GitLab under Settings → CI/CD →
+# General pipelines → "CI/CD configuration file", set to
+# "infrastructure/.gitlab-ci.yml", rather than assuming a root
+# .gitlab-ci.yml exists (none does today — see the root CONTRIBUTING.md).
+#
+# `validate` needs no AWS credentials at all (fmt/validate are purely
+# local checks against the HCL itself) and runs on every push. `plan`
+# and `apply` need AWS credentials as protected CI/CD variables
+# (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or better: configure OIDC
+# federation between GitLab and an AWS IAM role and swap these jobs to
+# assume that role instead of using static keys — static keys are shown
+# here only because OIDC federation setup is account-specific and out of
+# scope for this repo to configure). None of this has been run — there
+# is no AWS account behind this pipeline yet.
+
+image:
+  name: hashicorp/terraform:1.9
+  entrypoint: [""]
+
+variables:
+  TF_IN_AUTOMATION: "true"
+
+.terraform_env: &terraform_env
+  before_script:
+    - cd infrastructure/environments/${ENVIRONMENT}
+
+stages:
+  - validate
+  - plan
+  - apply
+
+# --- validate: no AWS credentials required ------------------------------
+
+fmt-check:
+  stage: validate
+  script:
+    - terraform fmt -check -recursive infrastructure/
+
+validate:dev:
+  stage: validate
+  variables:
+    ENVIRONMENT: dev
+  <<: *terraform_env
+  script:
+    - terraform init -backend=false
+    - terraform validate
+
+validate:staging:
+  stage: validate
+  variables:
+    ENVIRONMENT: staging
+  <<: *terraform_env
+  script:
+    - terraform init -backend=false
+    - terraform validate
+
+validate:prod:
+  stage: validate
+  variables:
+    ENVIRONMENT: prod
+  <<: *terraform_env
+  script:
+    - terraform init -backend=false
+    - terraform validate
+
+# --- plan: requires AWS credentials, runs on merge requests -------------
+
+.plan_job: &plan_job
+  stage: plan
+  <<: *terraform_env
+  script:
+    - terraform init
+    - terraform plan -out=tfplan -var-file=terraform.tfvars
+  artifacts:
+    paths:
+      - infrastructure/environments/${ENVIRONMENT}/tfplan
+    expire_in: 1 week
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+plan:dev:
+  <<: *plan_job
+  variables:
+    ENVIRONMENT: dev
+
+plan:staging:
+  <<: *plan_job
+  variables:
+    ENVIRONMENT: staging
+
+plan:prod:
+  <<: *plan_job
+  variables:
+    ENVIRONMENT: prod
+
+# --- apply: manual, protected branches only ------------------------------
+
+.apply_job: &apply_job
+  stage: apply
+  <<: *terraform_env
+  script:
+    - terraform init
+    - terraform apply tfplan
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+apply:dev:
+  <<: *apply_job
+  variables:
+    ENVIRONMENT: dev
+  needs: ["plan:dev"]
+
+apply:staging:
+  <<: *apply_job
+  variables:
+    ENVIRONMENT: staging
+  needs: ["plan:staging"]
+
+apply:prod:
+  <<: *apply_job
+  variables:
+    ENVIRONMENT: prod
+  needs: ["plan:prod"]
+  # An extra confirmation gate on top of `when: manual` — prod applies
+  # should never be one accidental click away, even for someone with
+  # pipeline permissions on the protected branch.
+  environment:
+    name: production
