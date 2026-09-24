@@ -22,27 +22,39 @@ Transactional Outbox's delivery semantics, and the testing strategy.
 
 ## Services and local URLs
 
+Only two URLs matter for actually *using* the platform. Everything else
+below is infrastructure the app depends on, or tooling for developers —
+not something you open and interact with directly.
+
+| | URL | What it actually is |
+|---|---|---|
+| 🖥️ **The app** | **http://localhost:5173** | The product: React dashboard, payments table, analytics charts. This is `frontend` — open this one. |
+| 📊 **Dashboards** | **http://localhost:3000**<br>user: `admin`<br>password: `admin` | This is `grafana`, a separate *monitoring* tool — not the app. It shows operational metrics about the *system itself* (request rates, latency, Kafka throughput, worker activity), already set up with no manual configuration. You'd open this to check the platform's health, not to use the platform. |
+
+`:5173` and `:3000` are unrelated pipelines that happen to run side by
+side: the frontend talks directly to `payments-service` (`:8080`) and
+`analytics-service` (`:8082`) for its data. Grafana never talks to the
+frontend, and the frontend never talks to Grafana — Grafana instead
+reads from `prometheus` (`:9090`), which independently scrapes metrics
+from the three Go services. Two parallel, independent systems sharing
+one `docker compose up`, not one feeding into the other.
+
+Everything else, for reference:
+
 | Service | Language | Role | URL / port |
 |---|---|---|---|
-| `frontend` | React + TypeScript | Web UI — dashboard, payments table, analytics charts | http://localhost:5173 |
 | `payments-service` | Go | HTTP API, OLTP writes, outbox relay | http://localhost:8080 |
 | `payment-processor` | Go | Kafka consumer, bounded worker pool | http://localhost:9091 (`/health`, `/metrics`) |
 | `analytics-service` | Go | Kafka consumer, ClickHouse, analytics HTTP API | http://localhost:8082 |
 | `mariadb` | — | OLTP storage | localhost:3306 |
 | `clickhouse` | — | OLAP storage | localhost:8123 (HTTP), localhost:9000 (native) |
 | `kafka` | — | Event backbone (KRaft, no Zookeeper) | localhost:9092 (containers), localhost:29092 (host tools) |
-| `prometheus` | — | Metrics | http://localhost:9090 |
-| `grafana` | — | Dashboards (Prometheus datasource pre-provisioned) | http://localhost:3000 (admin/admin) |
-
-## Requirements
-
-Docker and Docker Compose only. No local Go, Node.js, MariaDB, Kafka,
-ClickHouse, Prometheus, or Grafana installation needed to **run** the
-platform. Running the Go test suites locally (outside Docker) needs a
-Go toolchain per module; the race detector additionally needs a C
-compiler (cgo) — see [Race detector](#race-detector) below.
+| `prometheus` | — | Metrics storage Grafana reads from | http://localhost:9090 |
 
 ## Running locally
+
+**Prerequisites**: just Docker and Docker Compose. Nothing else needs to
+be installed on your machine to run the platform.
 
 ```bash
 git clone <repository>
@@ -51,21 +63,38 @@ cp .env.example .env
 docker compose up --build
 ```
 
-(`.env` isn't read automatically by Docker Compose or the services
-today — see its comments; it exists as living documentation of every
-environment variable each service accepts.)
+That's the whole setup. The first run takes a few minutes (it builds the
+frontend and all three Go services from source); after that, startup
+takes seconds. Once the command settles and stops printing new logs:
 
-`make up` / `make down` / `make clean` are equivalent shortcuts for
-`docker compose up --build` / `docker compose down` / `docker compose
-down -v` (the latter also removes the MariaDB/ClickHouse/Kafka/Grafana
-volumes — a full local reset).
+- **Open the app** → http://localhost:5173
+- **Open the dashboards** (optional) → http://localhost:3000, user `admin` / password `admin` — see [Services and local URLs](#services-and-local-urls) above for what this is
 
-Startup order is enforced via Docker health checks, not just container
-start order: `payments-service` waits on MariaDB healthy + the
-`kafka-init` topic-creation job completing; `payment-processor` and
-`analytics-service` wait on `kafka-init` (and, for analytics-service,
-ClickHouse healthy) the same way. All three Go services expose
-`/health` (process alive) and `/ready` (dependencies reachable):
+If you'd rather not type the full `docker compose` command, `make up`
+does the same thing (see the [Makefile](Makefile)).
+
+<details>
+<summary>About <code>.env.example</code></summary>
+
+There's also a `.env.example` file listing every environment variable
+each service accepts (ports, credentials, tuning knobs). It's **not**
+read automatically by Docker Compose or by any service today — the real
+defaults live directly in `docker-compose.yml`. Copy it to `.env` only
+if you want a single place to read what's configurable; editing `.env`
+alone won't change anything unless you also update `docker-compose.yml`
+to use it.
+
+</details>
+
+### Verifying the backend is healthy (optional)
+
+Docker health checks — not just container start order — gate startup:
+`payments-service` waits on MariaDB being healthy and Kafka's topics
+existing; `payment-processor` and `analytics-service` wait on Kafka
+(and, for analytics-service, ClickHouse) the same way. So by the time
+`docker compose up` settles, the backend should already be ready — but
+if you want to check directly, all three Go services expose `/health`
+(process alive) and `/ready` (dependencies reachable):
 
 ```bash
 curl localhost:8080/health   # payments-service
@@ -87,9 +116,9 @@ curl -X POST localhost:8080/api/v1/transactions \
 curl "localhost:8082/api/v1/analytics/corridors?source_country=CO&destination_country=US"
 ```
 
-### Dashboards
-
-Open http://localhost:3000 (admin/admin) — the **"Cross-Border Payments — Platform Overview"** dashboard is provisioned automatically on startup, no manual import needed. If a Prometheus target ever shows as down, see "Troubleshooting a DOWN Prometheus target" in `docs/architecture.md`.
+> If a Prometheus target ever shows as down in Grafana, see
+> "Troubleshooting a DOWN Prometheus target" in
+> [docs/architecture.md](docs/architecture.md).
 
 ## Database & Analytics
 
@@ -165,6 +194,11 @@ Two documents contain **real, measured** results against a 1,000,000
   wins" comparison.
 
 ## Tests
+
+Running the app (above) only needs Docker. Running the Go test suites
+directly on your machine (outside a container) additionally needs a Go
+toolchain per module; the race detector further needs a C compiler
+(cgo) — see [Race detector](#race-detector) below.
 
 Each Go module (`backend/payments-service`, `backend/payment-processor`,
 `backend/analytics-service`, `scripts/seed`) has its own test suite
