@@ -15,6 +15,10 @@ import (
 type Config struct {
 	HTTPPort string
 
+	// CORSAllowedOrigin is the frontend's origin, allowed to call this
+	// API directly from the browser (see internal/handlers/http.WithCORS).
+	CORSAllowedOrigin string
+
 	ClickHouseAddr     string
 	ClickHouseDatabase string
 	ClickHouseUser     string
@@ -34,6 +38,7 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		HTTPPort:               getEnv("HTTP_PORT", "8082"),
+		CORSAllowedOrigin:      getEnv("CORS_ALLOWED_ORIGIN", "http://localhost:5173"),
 		ClickHouseAddr:         getEnv("CLICKHOUSE_ADDR", "localhost:9000"),
 		ClickHouseDatabase:     getEnv("CLICKHOUSE_DATABASE", "analytics"),
 		ClickHouseUser:         getEnv("CLICKHOUSE_USER", "default"),

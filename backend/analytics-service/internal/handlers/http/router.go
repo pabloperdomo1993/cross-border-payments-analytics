@@ -8,7 +8,9 @@ import (
 )
 
 // NewRouter builds the complete HTTP handler for analytics-service.
-func NewRouter(analyticsHandler *AnalyticsHandler, healthHandler *HealthHandler, logger *slog.Logger) http.Handler {
+// corsAllowedOrigin is the frontend's origin, allowed to call this API
+// directly from the browser (see WithCORS).
+func NewRouter(analyticsHandler *AnalyticsHandler, healthHandler *HealthHandler, logger *slog.Logger, corsAllowedOrigin string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/v1/analytics/corridors", analyticsHandler.Corridors)
@@ -20,5 +22,5 @@ func NewRouter(analyticsHandler *AnalyticsHandler, healthHandler *HealthHandler,
 	mux.HandleFunc("GET /ready", healthHandler.Ready)
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	return WithLogging(logger, WithMetrics(mux))
+	return WithCORS(corsAllowedOrigin, WithLogging(logger, WithMetrics(mux)))
 }

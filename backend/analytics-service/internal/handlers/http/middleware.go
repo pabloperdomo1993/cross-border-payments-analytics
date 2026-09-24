@@ -70,6 +70,27 @@ func WithLogging(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
+// WithCORS returns middleware that allows cross-origin requests from
+// allowedOrigin. The frontend (served on its own port, e.g.
+// http://localhost:5173) calls this API directly from the browser on a
+// different port, which the browser blocks by default without these
+// headers. Preflight OPTIONS requests are answered directly here, since
+// the underlying mux has no OPTIONS routes registered for any endpoint.
+func WithCORS(allowedOrigin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // WithMetrics wraps mux, recording http_requests_total/duration labeled
 // by route PATTERN (via mux.Handler, Go 1.22+'s ServeMux) rather than
 // the raw request path.

@@ -37,8 +37,9 @@ const (
 )
 
 type config struct {
-	httpPort   string
-	dbHost     string
+	httpPort          string
+	corsAllowedOrigin string
+	dbHost            string
 	dbPort     string
 	dbName     string
 	dbUser     string
@@ -53,6 +54,7 @@ type config struct {
 func loadConfig() config {
 	return config{
 		httpPort:           getEnv("HTTP_PORT", "8080"),
+		corsAllowedOrigin:  getEnv("CORS_ALLOWED_ORIGIN", "http://localhost:5173"),
 		dbHost:             getEnv("DB_HOST", "localhost"),
 		dbPort:             getEnv("DB_PORT", "3306"),
 		dbName:             getEnv("DB_NAME", "payments"),
@@ -119,7 +121,7 @@ func run(logger *slog.Logger) error {
 
 	txHandler := httphandler.NewTransactionHandler(createTx, getTx, logger)
 	healthHandler := httphandler.NewHealthHandler(db)
-	router := httphandler.NewRouter(txHandler, healthHandler, logger)
+	router := httphandler.NewRouter(txHandler, healthHandler, logger, cfg.corsAllowedOrigin)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.httpPort,

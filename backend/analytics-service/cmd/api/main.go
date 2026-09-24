@@ -55,7 +55,7 @@ func run(logger *slog.Logger) error {
 
 	analyticsHandler := httphandler.NewAnalyticsHandler(repo, logger)
 	healthHandler := httphandler.NewHealthHandler(repo)
-	router := httphandler.NewRouter(analyticsHandler, healthHandler, logger)
+	router := httphandler.NewRouter(analyticsHandler, healthHandler, logger, cfg.CORSAllowedOrigin)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,

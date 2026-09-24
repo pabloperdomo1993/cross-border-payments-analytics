@@ -9,8 +9,10 @@ import (
 
 // NewRouter builds the complete HTTP handler for payments-service,
 // wiring routes to their handlers and wrapping everything with request
-// logging and metrics middleware.
-func NewRouter(txHandler *TransactionHandler, healthHandler *HealthHandler, logger *slog.Logger) http.Handler {
+// logging and metrics middleware. corsAllowedOrigin is the frontend's
+// origin, allowed to call this API directly from the browser (see
+// WithCORS).
+func NewRouter(txHandler *TransactionHandler, healthHandler *HealthHandler, logger *slog.Logger, corsAllowedOrigin string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/v1/transactions", txHandler.Create)
@@ -19,5 +21,5 @@ func NewRouter(txHandler *TransactionHandler, healthHandler *HealthHandler, logg
 	mux.HandleFunc("GET /ready", healthHandler.Ready)
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	return WithLogging(logger, WithMetrics(mux))
+	return WithCORS(corsAllowedOrigin, WithLogging(logger, WithMetrics(mux)))
 }
